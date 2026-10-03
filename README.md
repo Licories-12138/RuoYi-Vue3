@@ -1,3 +1,18 @@
+> ## 📌 本分支说明（二次开发记录）
+>
+> 这是 **`RuoYi-Vue3` 仓库的前端分支（main）**，Vue 3.4 + Element Plus + Vite。
+> **后端代码在 [`backend` 分支](https://github.com/Licories-12138/RuoYi-Vue3/tree/backend)**（RuoYi-Vue v3.9.2，JDK 17 + Spring Boot 4.1.0）。
+>
+> **我在官方基础上做的改造：**
+>
+> | 模块 | 说明 | 位置 |
+> |---|---|---|
+> | 课程管理模块（前端） | 页面 + 接口封装，配合后端 CRUD 联调通过 | `src/views/course/`、`src/api/course/` |
+>
+> **启动**：`npm install` → `npm run dev`，接口代理指向 `http://localhost:8080`（需先启动后端）。
+>
+> ---
+
 <p align="center">
 	<img alt="logo" src="https://oscimg.oschina.net/oscnet/up-d3d0a9303e11d522a06cd263f3079027715.png">
 </p>
