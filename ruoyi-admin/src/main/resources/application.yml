@@ -96,8 +96,8 @@ spring:
 token:
   # 令牌自定义标识
   header: Authorization
-  # 令牌密钥
-  secret: abcdefghijklmnopqrstuvwxyz
+  # 令牌密钥（原为若依默认值，公开仓库等于把 JWT 密钥交出去，已换成随机串。改后需重新登录）
+  secret: dT7V8Il4VmDo0czZOv0QLI4JAroLmbhL
   # 令牌有效期（默认30分钟）
   expireTime: 30
 
