@@ -1,3 +1,20 @@
+> ## 📌 本分支说明（二次开发记录）
+>
+> 这是 **`RuoYi-Vue3` 仓库的后端分支（backend）**，前端代码在 [`main` 分支](https://github.com/Licories-12138/RuoYi-Vue3/tree/main)。
+> 基于若依官方 `RuoYi-Vue v3.9.2` 二次开发，后端 JDK 17 + Spring Boot 4.1.0 + MyBatis。
+>
+> **我在官方基础上做的改造：**
+>
+> | 模块 | 说明 | 位置 |
+> |---|---|---|
+> | 课程管理模块 | 完整 CRUD：Controller / Service / Mapper / XML，先用代码生成器生成再手写改造 | `ruoyi-admin/.../course/` |
+> | 定时任务示例 | Quartz 定时任务 `MyTask` 实践 | `ruoyi-quartz/.../task/` |
+> | JWT 密钥安全加固 | 官方默认密钥 `abcdefghijklmnopqrstuvwxyz` 为公开值，已替换为随机串 | `ruoyi-admin/src/main/resources/application.yml` |
+>
+> **本地启动**：导入 `sql/` 下两个脚本 → 改 `application-druid.yml` 的数据库连接 → 启动 `ruoyi-admin` 的 `RuoYiApplication` → 前端 `npm run dev`（代理指向 `localhost:8080`）
+>
+> ---
+
 <p align="center">
 	<img alt="logo" src="https://oscimg.oschina.net/oscnet/up-d3d0a9303e11d522a06cd263f3079027715.png">
 </p>
