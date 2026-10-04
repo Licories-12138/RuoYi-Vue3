@@ -1,17 +1,26 @@
 > ## 📌 本分支说明（二次开发记录）
 >
-> 这是 **`RuoYi-Vue3` 仓库的前端分支（main）**，Vue 3.4 + Element Plus + Vite。
-> **后端代码在 [`backend` 分支](https://github.com/Licories-12138/RuoYi-Vue3/tree/backend)**（RuoYi-Vue v3.9.2，JDK 17 + Spring Boot 4.1.0）。
+> 这是 **`RuoYi-Vue3` 仓库的前端分支（main）**，Vue 3.4 + Element Plus + Vite，对应外卖管理系统前端。
+> **配套后端在 [`ruoyi-merchant` 分支](https://github.com/Licories-12138/RuoYi-Vue3/tree/ruoyi-merchant)**（基于 RuoYi-Vue v3.9.2 二次开发，JDK 17 + Spring Boot 4.1.0）。
 >
 > **我在官方基础上做的改造：**
 >
 > | 模块 | 说明 | 位置 |
 > |---|---|---|
-> | 课程管理模块（前端） | 页面 + 接口封装，配合后端 CRUD 联调通过 | `src/views/course/`、`src/api/course/` |
+> | 系统改造 | 标题由"若依管理系统"改为"外卖管理系统"，替换 logo / 登录背景 / favicon | `.env.development`、`.env.production`、`public/` |
+> | 菜品管理模块（前端） | 商家端菜品视图 + 接口封装 | `src/views/merchant/dish/`、`src/api/merchant/dish.js` |
 >
-> **启动**：`npm install` → `npm run dev`，接口代理指向 `http://localhost:8080`（需先启动后端）。
+> **启动**：`npm install` → `npm run dev`，接口代理指向 `http://localhost:8080`（需先启动 ruoyi-merchant 后端）。
 >
 > ---
+
+> ### 本仓库三分支的配套关系
+>
+> | 分支 | 内容 | 说明 |
+> |---|---|---|
+> | `main` | 外卖管理系统**前端** | 本分支，配套 `ruoyi-merchant` |
+> | `ruoyi-merchant` | 外卖商家系统**后端**（`sky-*` 模块） | 与 `main` 配套 |
+> | `backend` | 若依原版 + 课程管理模块 | 学习笔记，独立存在，不与前端配套 |
 
 <p align="center">
 	<img alt="logo" src="https://oscimg.oschina.net/oscnet/up-d3d0a9303e11d522a06cd263f3079027715.png">
