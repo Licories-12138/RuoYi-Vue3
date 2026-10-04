@@ -1,19 +1,27 @@
 > ## 📌 本分支说明（二次开发记录）
 >
-> 这是 **`RuoYi-Vue3` 仓库的后端分支（backend）**，前端代码在 [`main` 分支](https://github.com/Licories-12138/RuoYi-Vue3/tree/main)。
+> 这是 **`RuoYi-Vue3` 仓库的后端分支（ruoyi-merchant）**，外卖商家系统后端，配套前端在 [`main` 分支](https://github.com/Licories-12138/RuoYi-Vue3/tree/main)。
 > 基于若依官方 `RuoYi-Vue v3.9.2` 二次开发，后端 JDK 17 + Spring Boot 4.1.0 + MyBatis。
 >
 > **我在官方基础上做的改造：**
 >
-> | 模块 | 说明 | 位置 |
-> |---|---|---|
-> | 课程管理模块 | 完整 CRUD：Controller / Service / Mapper / XML，先用代码生成器生成再手写改造 | `ruoyi-admin/.../course/` |
-> | 定时任务示例 | Quartz 定时任务 `MyTask` 实践 | `ruoyi-quartz/.../task/` |
-> | JWT 密钥安全加固 | 官方默认密钥 `abcdefghijklmnopqrstuvwxyz` 为公开值，已替换为随机串 | `ruoyi-admin/src/main/resources/application.yml` |
+> | 改造 | 说明 |
+> |---|---|
+> | 模块命名重构 | 若依 `ruoyi-*` 六模块全面改名 `sky-*`（admin / common / framework / generator / quartz / system） |
+> | 新增商家模块 | `sky-merchant`，外卖商家业务 |
+> | JWT 密钥加固 | 官方默认密钥 `abcdefghijklmnopqrstuvwxyz` 为公开值，已替换为随机串 |
 >
-> **本地启动**：导入 `sql/` 下两个脚本 → 改 `application-druid.yml` 的数据库连接 → 启动 `ruoyi-admin` 的 `RuoYiApplication` → 前端 `npm run dev`（代理指向 `localhost:8080`）
+> **本地启动**：导入 `sql/` 下两个脚本 → 改 `application-druid.yml` 的数据库连接 → 启动 `sky-admin` 的启动类 → 前端 `npm run dev`（代理指向 `localhost:8080`）
 >
 > ---
+
+> ### 本仓库三分支的配套关系
+>
+> | 分支 | 内容 | 说明 |
+> |---|---|---|
+> | `main` | 外卖管理系统**前端** | 配套 `ruoyi-merchant` |
+> | `ruoyi-merchant` | 外卖商家系统**后端**（`sky-*` 模块） | 本分支，与 `main` 配套 |
+> | `backend` | 若依原版 + 课程管理模块 | 学习笔记，独立存在，不与前端配套 |
 
 <p align="center">
 	<img alt="logo" src="https://oscimg.oschina.net/oscnet/up-d3d0a9303e11d522a06cd263f3079027715.png">
