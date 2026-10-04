@@ -47,6 +47,15 @@ user:
 
 # Spring配置
 spring:
+  # 大模型接入（自然语言点单 Agent）
+  # API Key 走环境变量 DASHSCOPE_KEY，不要写死在这里
+  ai:
+    openai:
+      api-key: ${DASHSCOPE_KEY}
+      base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
+      chat:
+        model: qwen3.7-flash
+        temperature: 0.2
   # 资源信息
   messages:
     # 国际化资源文件路径
