@@ -9,9 +9,23 @@
 > |---|---|
 > | 模块命名重构 | 若依 `ruoyi-*` 六模块全面改名 `sky-*`（admin / common / framework / generator / quartz / system） |
 > | 新增商家模块 | `sky-merchant`，外卖商家业务 |
+> | 自然语言点单 Agent | 接入 Spring AI，`@Tool` 查真实 `tb_dish` 表，老板用自然语言查菜品 |
 > | JWT 密钥加固 | 官方默认密钥 `abcdefghijklmnopqrstuvwxyz` 为公开值，已替换为随机串 |
 >
-> **本地启动**：导入 `sql/` 下两个脚本 → 改 `application-druid.yml` 的数据库连接 → 启动 `sky-admin` 的启动类 → 前端 `npm run dev`（代理指向 `localhost:8080`）
+> **自然语言点单 Agent**（核心亮点）：
+>
+> `sky-merchant` 接入 Spring AI 2.0.1 + 阿里云百炼 `qwen3.7-flash`，商家老板直接说人话查菜品：
+>
+> ```
+> GET /merchant/agent/chat?message=宫保鸡丁多少钱
+> → 宫保鸡丁售价 28.00 元，目前在售。
+> ```
+>
+> 实现方式：`DishTools` 里两个 `@Tool` 方法（按菜名模糊查 / 查在售菜品），内部调 `DishMapper` 查真实 MySQL。模型不执行代码，只返回"调哪个方法、传什么参数"，由 Spring AI 真正查库、把结果喂回模型组织成人话。停售菜品（`status=1`）会被正确过滤掉。
+>
+> 学习起步的最小 demo 见 [spring-ai-order-agent](https://github.com/Licories-12138/spring-ai-order-agent)。
+>
+> **本地启动**：导入 `sql/` 下两个脚本 → 改 `application-druid.yml` 的数据库连接 → 设环境变量 `DASHSCOPE_KEY` → 启动 `sky-admin` 的启动类 → 前端 `npm run dev`（代理指向 `localhost:8080`）
 >
 > ---
 
