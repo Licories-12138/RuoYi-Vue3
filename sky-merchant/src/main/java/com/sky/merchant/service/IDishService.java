@@ -20,6 +20,13 @@ public interface IDishService
     public Dish selectDishById(Long id);
 
     /**
+     * 查询上架菜品管理列表
+     *
+     * @return 菜品管理集合
+     */
+    public List<Dish> listOnSaleDishes();
+
+    /**
      * 查询菜品管理列表
      * 
      * @param dish 菜品管理

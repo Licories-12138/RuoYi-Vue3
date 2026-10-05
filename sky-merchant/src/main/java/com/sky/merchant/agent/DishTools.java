@@ -2,17 +2,16 @@ package com.sky.merchant.agent;
 
 import java.math.BigDecimal;
 import java.util.List;
-import java.util.stream.Collectors;
+import com.sky.merchant.service.IDishService;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Component;
 import com.sky.merchant.domain.Dish;
-import com.sky.merchant.mapper.DishMapper;
 
 /**
  * 自然语言点单 Agent 的工具集：菜品查询
- *
  * 和 llm-demo 的 OrderTools 是同一套机制，区别只有一个：
  * 数据从「内存假数据」换成了「真实 MySQL 的 tb_dish 表」。
  * 模型不执行代码，它只返回"我想调 searchDishByName，参数是 宫保鸡丁"，
@@ -22,7 +21,9 @@ import com.sky.merchant.mapper.DishMapper;
 public class DishTools
 {
     @Autowired
-    private DishMapper dishMapper;
+    private IDishService dishService;
+    @Autowired
+    private RedisTemplate<Object, Object> redisTemplate;
 
     /**
      * 按菜名模糊查询菜品。
@@ -36,7 +37,9 @@ public class DishTools
 
         Dish query = new Dish();
         query.setName(name);
-        List<Dish> list = dishMapper.selectDishList(query);
+        // 增加热门搜索次数
+        redisTemplate.opsForZSet().incrementScore("merchant:dish:hot", name.trim(), 1);
+        List<Dish> list = dishService.selectDishList(query);
 
         if (list == null || list.isEmpty())
         {
@@ -57,9 +60,7 @@ public class DishTools
     {
         System.out.println(">>> [Agent] 模型调用 listOnSaleDishes，查询在售菜品");
 
-        Dish query = new Dish();
-        query.setStatus(0L);
-        List<Dish> list = dishMapper.selectDishList(query);
+        List<Dish> list = dishService.listOnSaleDishes();
 
         if (list == null || list.isEmpty())
         {
