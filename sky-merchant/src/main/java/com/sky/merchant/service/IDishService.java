@@ -28,17 +28,6 @@ public interface IDishService
     public List<Dish> selectDishList(Dish dish);
 
     /**
-     * 查询全部在售菜品，带 Redis 缓存。
-     * 
-     * 和 selectDishList 的区别：这个方法不带任何分页，
-     * 给 Agent 和客户端这种要「全量数据」的调用方用。
-     * 后台分页列表请用 selectDishList，不要走这里。
-     * 
-     * @return 在售菜品集合
-     */
-    public List<Dish> listOnSaleDishes();
-
-    /**
      * 新增菜品管理
      * 
      * @param dish 菜品管理
