@@ -101,10 +101,6 @@ public class DishAgentController
                         .model(chatModelName)
                         .temperature(chatTemperature)
                         .toolCallbacks(java.util.Arrays.asList(toolCallbacks)))
-                .defaultOptions(org.springframework.ai.openai.OpenAiChatOptions.builder()
-                        .model(chatModelName)
-                        .temperature(chatTemperature)
-                        .toolCallbacks(java.util.Arrays.asList(toolCallbacks)))
                 .build();
 
         this.parseClient = builder.clone()
