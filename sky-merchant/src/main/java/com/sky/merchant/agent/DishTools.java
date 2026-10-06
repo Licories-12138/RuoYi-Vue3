@@ -3,6 +3,7 @@ package com.sky.merchant.agent;
 import java.math.BigDecimal;
 import java.util.List;
 import com.sky.merchant.service.IDishService;
+import com.sky.merchant.constant.RedisKeys;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -38,7 +39,7 @@ public class DishTools
         Dish query = new Dish();
         query.setName(name);
         // 增加热门搜索次数
-        redisTemplate.opsForZSet().incrementScore("merchant:dish:hot", name.trim(), 1);
+        redisTemplate.opsForZSet().incrementScore(RedisKeys.DISH_HOT_KEY, name.trim(), 1);
         List<Dish> list = dishService.selectDishList(query);
 
         if (list == null || list.isEmpty())

@@ -16,6 +16,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import com.sky.common.core.domain.AjaxResult;
 import com.sky.merchant.agent.DishTools;
+import com.sky.merchant.constant.RedisKeys;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -32,8 +33,6 @@ public class DishAgentController
 {
     @Autowired
     private RedisCache redisCache; // Fixed: Added missing semicolon
-    private static final String CHAT_CACHE_KEY = "merchant:agent:chat:";
-    private static final int  CHAT_CACHE_TTL_SECONDS = 30 * 60;   // 30 分钟
     private final ChatClient chatClient;
     private final ChatClient parseClient;
 
@@ -69,7 +68,7 @@ public class DishAgentController
     {
         // 为什么用 md5 不用原文 —— 中文长句当 Redis key 又长又占内存；
         // 为什么必须是确定性哈希 —— 同一个问题每次得算出同一个 key，所以不能带随机盐（加密哈希、UUID 都不行）。
-        String key = CHAT_CACHE_KEY + DigestUtils.md5DigestAsHex(message.getBytes(StandardCharsets.UTF_8));
+        String key = RedisKeys.CHAT_CACHE_PREFIX + DigestUtils.md5DigestAsHex(message.getBytes(StandardCharsets.UTF_8));
         String reply = redisCache.getCacheObject(key);
         if (reply != null && !reply.isBlank())
         {
@@ -85,7 +84,7 @@ public class DishAgentController
 
         if (reply != null && !reply.isBlank())
         {
-            redisCache.setCacheObject(key, reply, CHAT_CACHE_TTL_SECONDS, TimeUnit.SECONDS);
+            redisCache.setCacheObject(key, reply, RedisKeys.CHAT_CACHE_TTL_SECONDS, TimeUnit.SECONDS);
         }
         AjaxResult miss = AjaxResult.success("操作成功", reply);
         miss.put("fromCache", false);
