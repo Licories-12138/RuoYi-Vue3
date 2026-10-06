@@ -1,6 +1,6 @@
 # Day9 Redis 数据类型与若依中的用法
 
-日期：2026-10-05　分支：ruoyi-merchant　本机 Redis：3.2.100（`D:\Develop\Redis-x64-3.2.100`，端口 6379，db 0）
+日期：2026-10-05（第五节 Step 5、6 于 2026-10-06 在重写分支 day9-rewrite 上重做并实测）　分支：ruoyi-merchant / day9-rewrite　本机 Redis：3.2.100（`D:\Develop\Redis-x64-3.2.100`，端口 6379，db 0）
 
 ---
 
@@ -248,6 +248,47 @@ Redis 侧核对 —— 不只是数个数，是真的反算了 md5：
 用例 1 和 2 是同一句话，算出来是同一个 key，所以库里是 2 个而不是 3 个。取出来的 value 正好是 `宫保鸡丁售价 28.00 元，目前在售。`。
 
 **结论：3.69 s → 57 ms，约 65 倍。** 端到端耗时比 `costMs` 多几十毫秒，差额是 Spring MVC 分发 + JSON 序列化 + 网络开销。
+
+### Step 6 验收：热榜与缓存观测接口（重写分支 day9-rewrite，8080 端口）
+
+三个新接口：
+
+| 接口 | 作用 |
+| --- | --- |
+| `GET /merchant/dish/hot?top=5` | 热榜 ZSet 倒序取前 N，返回 `[{rank, name, count}]` |
+| `GET /merchant/dish/cache/ttl?key=xxx` | 查某个 key 是否存在、还剩多少秒 |
+| `DELETE /merchant/dish/cache/clear` | 清 `merchant:dish:*`，**但保留热榜** |
+
+实测五步，顺序不能乱：
+
+| # | 请求 | 结果 |
+| --- | --- | --- |
+| 1 | `cache/ttl?key=merchant:dish:hot` | `{"exists":true,"ttlSeconds":-1}` |
+| 2 | `cache/ttl?key=merchant:dish:80` | `{"exists":true,"ttlSeconds":1779}` |
+| 3 | `DELETE cache/clear` | `{"cleared":1}` |
+| 4 | `dish/hot` | `[{"rank":1,"name":"宫保鸡丁","count":4}]`，热榜还在 |
+| 5 | `cache/ttl?key=merchant:dish:80` | `{"exists":false,"ttlSeconds":-2}` |
+
+三个数字要记住：
+
+- **`-1` 和 `-2` 是两件事**：第 1 步的 `-1` 是「存在但永不过期」（热榜的特征），第 5 步的 `-2` 是「key 不存在」。按 `getExpire` 的返回值区分，别都当成「快过期了」。
+- **第 3 步是 `cleared:1` 而不是 2**：通配符扫到 2 个 key（`dish:80` + `hot`），过滤掉热榜后只删了 1 个。**这个 1 就是「排除热榜」逻辑生效的证据。**
+- **第 4 步 count 还是 4**：清缓存没有把长期累积的统计量一起抹掉。第 3 步和第 4 步是配合的，单独看任何一个都说明不了问题。
+
+两个实现细节：
+
+1. **`RedisCache.keys()` 无匹配时返回 `Collections.emptySet()`**（不可变集合）。所以拿到 keys 之后不要直接 `remove`，先 `new ArrayList<>(keys)` 拷一份再删，否则会抛 `UnsupportedOperationException`。
+2. **`redisTemplate.keys()` 底层是 Redis 的 `KEYS` 命令**，O(N) 全库扫描、会阻塞其它请求。教学项目够用，生产要换 `SCAN`。
+
+顺带一个跨语言的坑：热榜的 member 在 Redis 里是 **JSON 序列化过的**（`"宫保鸡丁"` 带双引号），因为 `RedisConfig` 第 29/33 行用的是 `FastJson2JsonRedisSerializer`。Java 侧读写走同一套序列化器所以是对称的，但用 `redis-cli` 手工造数据必须写成：
+
+```bash
+redis-cli -n 0 zincrby merchant:dish:hot 2 '"鱼香肉丝"'
+```
+
+少一层引号写进去的就是另一个成员，接口读出来会对不上。
+
+这一步还顺手把 Redis key 全部收口到了 `sky-merchant/.../constant/RedisKeys.java`：`merchant:dish:hot` 之前在 `DishTools` 里硬编码，三个 key 分散在 Service / 工具类 / Controller 三处，现在全项目只有一个地方写字面量。
 
 ---
 
