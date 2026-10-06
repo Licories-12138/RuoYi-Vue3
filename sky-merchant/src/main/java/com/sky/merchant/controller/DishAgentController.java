@@ -1,20 +1,24 @@
 package com.sky.merchant.controller;
 
+import com.sky.common.core.redis.RedisCache;
 import com.sky.merchant.domain.OrderRequest;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.method.MethodToolCallbackProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.util.DigestUtils;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import com.sky.common.core.domain.AjaxResult;
 import com.sky.merchant.agent.DishTools;
-
+import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 自然语言点单 Agent 入口。
@@ -26,6 +30,10 @@ import java.util.List;
 @Slf4j
 public class DishAgentController
 {
+    @Autowired
+    private RedisCache redisCache; // Fixed: Added missing semicolon
+    private static final String CHAT_CACHE_KEY = "merchant:agent:chat:";
+    private static final int  CHAT_CACHE_TTL_SECONDS = 30 * 60;   // 30 分钟
     private final ChatClient chatClient;
     private final ChatClient parseClient;
 
@@ -59,8 +67,30 @@ public class DishAgentController
     @GetMapping("/chat")
     public AjaxResult chat(@RequestParam String message)
     {
-        String reply = chatClient.prompt().user(message).call().content();
-        return AjaxResult.success("操作成功", reply);
+        // 为什么用 md5 不用原文 —— 中文长句当 Redis key 又长又占内存；
+        // 为什么必须是确定性哈希 —— 同一个问题每次得算出同一个 key，所以不能带随机盐（加密哈希、UUID 都不行）。
+        String key = CHAT_CACHE_KEY + DigestUtils.md5DigestAsHex(message.getBytes(StandardCharsets.UTF_8));
+        String reply = redisCache.getCacheObject(key);
+        if (reply != null && !reply.isBlank())
+        {
+            log.info("命中直接返回: {} <- {}", key, message);
+            return AjaxResult.success("操作成功", reply).put("fromCache", true);
+        }
+        log.info("未命中调用模型: {} <- {}", key, message);
+
+        // costMs 测的是「start 到 costMs 这两行之间」的时间
+        long start = System.nanoTime();
+        reply = chatClient.prompt().user(message).call().content();
+        long costMs = (System.nanoTime() - start) / 1_000_000;
+
+        if (reply != null && !reply.isBlank())
+        {
+            redisCache.setCacheObject(key, reply, CHAT_CACHE_TTL_SECONDS, TimeUnit.SECONDS);
+        }
+        AjaxResult miss = AjaxResult.success("操作成功", reply);
+        miss.put("fromCache", false);
+        miss.put("costMs", costMs);
+        return miss;
     }
 
     @GetMapping("/parse")
