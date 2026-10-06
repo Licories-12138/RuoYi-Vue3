@@ -128,20 +128,26 @@ public class DishController extends BaseController
         }
         AjaxResult result = success();
         result.put("key", key);
+        // 判断这个 key 在 Redis 中是否存在（返回 boolean）
         result.put("exists", redisCache.hasKey(key));
+        // 获取该 key 的剩余存活时间（秒）
         result.put("ttlSeconds", redisCache.getExpire(key));
         return result;
     }
 
     @DeleteMapping("/cache/clear")
     public AjaxResult clearCache() {
+        // 1. 模糊匹配获取所有符合模式的 key
         Collection<String> keys = redisCache.keys(RedisKeys.DISH_SCAN_PATTERN);
         if (keys == null || keys.isEmpty())
         {
             return success().put("cleared", 0);
         }
+        // 2. 转换为 List，准备删除
         List<String> toDelete = new ArrayList<>(keys);
+        // 3. 【重点】从待删除列表中移除热门菜品排行榜
         toDelete.remove(RedisKeys.DISH_HOT_KEY);      // ← 这一行是这次的重点
+        // 4. 批量删除剩余 key
         redisCache.deleteObject(toDelete);
         return success().put("cleared", toDelete.size());
     }
