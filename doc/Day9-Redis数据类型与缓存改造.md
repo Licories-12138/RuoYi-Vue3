@@ -205,6 +205,50 @@ select ... from tb_dish WHERE status = ? LIMIT ?
 
 顺带留了一个已知问题没有解：这版是朴素缓存，**模型这次答错了也会被原样缓存 30 分钟**。要根治得做回答质量校验或反馈失效机制，留到 Day12 一致性那节处理。
 
+### Step 5 验收：/chat 答案缓存（重写分支 day9-rewrite，8080 端口）
+
+接口：`GET /merchant/agent/chat?message=xxx`
+
+必须带 `Authorization: Bearer <token>` —— SecurityConfig 里 `/merchant/agent/**` 不在放行名单，最终落到 `anyRequest().authenticated()`，裸访问直接 401。
+
+| # | 用例 | 期望 |
+| --- | --- | --- |
+| 1 | 首次问「宫保鸡丁要多少钱」 | 日志 `未命中调用模型`；响应 `fromCache:false`；`costMs` 是几千（不是 0） |
+| 2 | 同一句原样再问 | 日志 `命中直接返回`；响应 `fromCache:true`；**响应里没有 `costMs` 字段** |
+| 3 | 换一个字再问（「钱」改成「元」） | 日志重新变 `未命中调用模型`；`fromCache:false`；`costMs` 非 0 |
+
+第 2 条那个「没有 costMs 字段」是刻意留的判别点：命中分支只 `put("fromCache", true)` 就 return，压根不经过计时那一段。所以**响应里一旦出现 costMs，就说明走的不是命中分支**，别被 `fromCache:true` 蒙过去。
+
+第 3 条验证的是 key 的确定性 —— md5 对整句话做哈希，差一个字就是另一个 key。
+
+Redis 侧核对：
+
+```bash
+redis-cli -n 0 keys "merchant:agent:chat:*"       # 应出现 2 个 key（用例 1、3）
+redis-cli -n 0 ttl  merchant:agent:chat:<md5>     # 应在 1800 上下递减
+```
+
+命令行传中文要注意编码：用 `curl -G --data-urlencode "message=..."`。直接拼进 URL 的话，Windows 的 curl 会按 GBK 把中文送出去，md5 算出来跟 JVM 侧的 UTF-8 对不上，症状就是「明明刚问过还是 miss」。用 Apifox / Postman 这类工具不用操心，它们默认按 UTF-8 编码。
+
+**实测结果（Apifox，2026-10-06）**
+
+| 用例 | 请求 | 端到端耗时 | 响应体 |
+| --- | --- | --- | --- |
+| 1 | 宫保鸡丁多少钱（首次） | 3.69 s | `costMs:3437`、`fromCache:false` |
+| 2 | 宫保鸡丁多少钱（再问） | 57 ms | `fromCache:true`、**无 costMs** |
+| 3 | 宫保鸡丁多少元（换字） | 2.48 s | `costMs:2464`、`fromCache:false` |
+
+Redis 侧核对 —— 不只是数个数，是真的反算了 md5：
+
+| key | 反算等于 | TTL |
+| --- | --- | --- |
+| `merchant:agent:chat:3fbca053169b37a7c7a35e1e449a474f` | md5("宫保鸡丁多少钱") | 1730 |
+| `merchant:agent:chat:37b3315d6749b9cba28ab7ee39c8530e` | md5("宫保鸡丁多少元") | 1765 |
+
+用例 1 和 2 是同一句话，算出来是同一个 key，所以库里是 2 个而不是 3 个。取出来的 value 正好是 `宫保鸡丁售价 28.00 元，目前在售。`。
+
+**结论：3.69 s → 57 ms，约 65 倍。** 端到端耗时比 `costMs` 多几十毫秒，差额是 Spring MVC 分发 + JSON 序列化 + 网络开销。
+
 ---
 
 ## 六、过期策略与内存淘汰（知道有哪些即可）
