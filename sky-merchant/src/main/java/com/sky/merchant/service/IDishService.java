@@ -1,6 +1,8 @@
 package com.sky.merchant.service;
 
 import java.util.List;
+import java.util.Map;
+
 import com.sky.merchant.domain.Dish;
 
 /**
@@ -17,14 +19,14 @@ public interface IDishService
      * @param id 菜品管理主键
      * @return 菜品管理
      */
-    public Dish selectDishById(Long id);
+    Dish selectDishById(Long id);
 
     /**
      * 查询上架菜品管理列表
      *
      * @return 菜品管理集合
      */
-    public List<Dish> listOnSaleDishes();
+    List<Dish> listOnSaleDishes();
 
     /**
      * 查询菜品管理列表
@@ -32,7 +34,7 @@ public interface IDishService
      * @param dish 菜品管理
      * @return 菜品管理集合
      */
-    public List<Dish> selectDishList(Dish dish);
+    List<Dish> selectDishList(Dish dish);
 
     /**
      * 新增菜品管理
@@ -40,7 +42,7 @@ public interface IDishService
      * @param dish 菜品管理
      * @return 结果
      */
-    public int insertDish(Dish dish);
+    int insertDish(Dish dish);
 
     /**
      * 修改菜品管理
@@ -48,7 +50,7 @@ public interface IDishService
      * @param dish 菜品管理
      * @return 结果
      */
-    public int updateDish(Dish dish);
+    int updateDish(Dish dish);
 
     /**
      * 批量删除菜品管理
@@ -56,7 +58,7 @@ public interface IDishService
      * @param ids 需要删除的菜品管理主键集合
      * @return 结果
      */
-    public int deleteDishByIds(Long[] ids);
+    int deleteDishByIds(Long[] ids);
 
     /**
      * 删除菜品管理信息
@@ -64,5 +66,11 @@ public interface IDishService
      * @param id 菜品管理主键
      * @return 结果
      */
-    public int deleteDishById(Long id);
+    int deleteDishById(Long id);
+
+    /**
+     * 获取热门菜品
+     * @param top 热门菜品数量
+     */
+    List<Map<String, Object>> getHotDishes(int top);
 }

@@ -1,17 +1,16 @@
 package com.sky.merchant.controller;
 
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
+import java.util.Map;
+
+import com.sky.common.core.redis.RedisCache;
+import com.sky.merchant.constant.RedisKeys;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.PutMapping;
-import org.springframework.web.bind.annotation.DeleteMapping;
-import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
 import com.sky.common.annotation.Log;
 import com.sky.common.core.controller.BaseController;
 import com.sky.common.core.domain.AjaxResult;
@@ -33,6 +32,9 @@ public class DishController extends BaseController
 {
     @Autowired
     private IDishService dishService;
+    @Autowired
+    private RedisCache redisCache;
+
 
     /**
      * 查询菜品管理列表
@@ -55,7 +57,7 @@ public class DishController extends BaseController
     public void export(HttpServletResponse response, Dish dish)
     {
         List<Dish> list = dishService.selectDishList(dish);
-        ExcelUtil<Dish> util = new ExcelUtil<Dish>(Dish.class);
+        ExcelUtil<Dish> util = new ExcelUtil<>(Dish.class);
         util.exportExcel(response, list, "菜品管理数据");
     }
 
@@ -100,5 +102,47 @@ public class DishController extends BaseController
     public AjaxResult remove(@PathVariable Long[] ids)
     {
         return toAjax(dishService.deleteDishByIds(ids));
+    }
+
+
+    /**
+     * 获取热门菜品列表
+     * @param top 热门菜品数量
+     * @return 热门菜品列表
+     */
+    @GetMapping("/hot")
+    public List<Map<String,Object>> getHotDishes(
+            @RequestParam(name = "top", defaultValue = "5")int top )
+    {
+        return dishService.getHotDishes(top);
+    }
+
+    /**
+     * 获取缓存数据
+     */
+    @GetMapping("/cache/ttl")
+    public AjaxResult getCache(@RequestParam(name = "key") String key) {
+        if (!key.startsWith("merchant:"))
+        {
+            return error("key 必须以 merchant: 开头");
+        }
+        AjaxResult result = success();
+        result.put("key", key);
+        result.put("exists", redisCache.hasKey(key));
+        result.put("ttlSeconds", redisCache.getExpire(key));
+        return result;
+    }
+
+    @DeleteMapping("/cache/clear")
+    public AjaxResult clearCache() {
+        Collection<String> keys = redisCache.keys(RedisKeys.DISH_SCAN_PATTERN);
+        if (keys == null || keys.isEmpty())
+        {
+            return success().put("cleared", 0);
+        }
+        List<String> toDelete = new ArrayList<>(keys);
+        toDelete.remove(RedisKeys.DISH_HOT_KEY);      // ← 这一行是这次的重点
+        redisCache.deleteObject(toDelete);
+        return success().put("cleared", toDelete.size());
     }
 }
