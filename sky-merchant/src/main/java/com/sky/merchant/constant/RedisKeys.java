@@ -10,17 +10,14 @@ package com.sky.merchant.constant;
  */
 public class RedisKeys
 {
-    /** 菜品缓存前缀，后面直接拼菜品 id。例：merchant:dish:80 */
-    public static final String DISH_DETAIL_PREFIX = "merchant:dish:";
+    /** 菜品详情缓存前缀，后面直接拼菜品 id。例：merchant:dish:detail:80 */
+    public static final String DISH_DETAIL_PREFIX = "merchant:dish:detail:";
 
     /** 在售菜品列表（全量、不带分页），Agent 和客户端用 */
     public static final String DISH_ONSALE_KEY = "merchant:dish:onsale:list";
 
     /** 热搜菜名 ZSet：member 是菜名，score 是被问次数。不设过期，长期累积 */
     public static final String DISH_HOT_KEY = "merchant:dish:hot";
-
-    /** 扫菜品缓存用的通配模式。注意它会一并命中 DISH_HOT_KEY，清理时必须排除 */
-    public static final String DISH_SCAN_PATTERN = "merchant:dish:*";
 
     /** 菜品对象与在售列表的 TTL（秒）：30 分钟 */
     public static final int DISH_TTL_SECONDS = 30 * 60;

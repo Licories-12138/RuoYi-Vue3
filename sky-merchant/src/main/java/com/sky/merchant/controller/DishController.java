@@ -4,7 +4,6 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
-
 import com.sky.common.core.redis.RedisCache;
 import com.sky.merchant.constant.RedisKeys;
 import jakarta.servlet.http.HttpServletResponse;
@@ -134,19 +133,34 @@ public class DishController extends BaseController
         return result;
     }
 
+    /**
+     * 清空"菜品缓存"。
+     * 只清真正属于缓存的两类 key：
+     *   - 在售列表 merchant:dish:onsale:list
+     *   - 菜品详情 merchant:dish:detail:{id}
+     * 布隆位图(merchant:dish:bloom)、重建锁(merchant:dish:lock:*)、热榜(merchant:dish:hot)
+     * 都不是缓存数据，绝不能删：
+     *   位图被删 → 所有 id 都被判成"不存在" → 全站菜品查询返回 null，必须重启才恢复；
+     *   锁被删   → 正在重建的请求互斥失效。
+     * 详情 key 有独立前缀 merchant:dish:detail:，扫出来就是干净的详情集合，
+     * 不需要再按"前缀 + 纯数字"过滤 —— 这正是把前缀从 merchant:dish: 拆开的原因。
+     */
     @DeleteMapping("/cache/clear")
     public AjaxResult clearCache() {
-        // 1. 模糊匹配获取所有符合模式的 key
-        Collection<String> keys = redisCache.keys(RedisKeys.DISH_SCAN_PATTERN);
-        if (keys == null || keys.isEmpty())
+        List<String> toDelete = new ArrayList<>();
+
+        // 1. 在售列表：固定 key，存在才加（不存在也加会让 cleared 虚高）
+        if (Boolean.TRUE.equals(redisCache.hasKey(RedisKeys.DISH_ONSALE_KEY)))
         {
-            return success().put("cleared", 0);
+            toDelete.add(RedisKeys.DISH_ONSALE_KEY);
         }
-        // 2. 转换为 List，准备删除
-        List<String> toDelete = new ArrayList<>(keys);
-        // 3. 【重点】从待删除列表中移除热门菜品排行榜
-        toDelete.remove(RedisKeys.DISH_HOT_KEY);      // ← 这一行是这次的重点
-        // 4. 批量删除剩余 key
+        // 2. 菜品详情：merchant:dish:detail:{id}
+        Collection<String> keys = redisCache.keys(RedisKeys.DISH_DETAIL_PREFIX + "*");
+        if (keys != null) {
+            toDelete.addAll(keys);
+        }
+
+        // 3. 批量删除
         redisCache.deleteObject(toDelete);
         return success().put("cleared", toDelete.size());
     }
