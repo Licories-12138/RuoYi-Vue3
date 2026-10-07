@@ -31,6 +31,12 @@ public class RedisKeys
     /** 问答答案缓存的 TTL（秒）：30 分钟 */
     public static final int CHAT_CACHE_TTL_SECONDS = 30 * 60;
 
+    /** 空值标记的 TTL（秒）：1 分钟。故意比正常缓存短得多 —— 见下方说明 */
+    public static final int DISH_EMPTY_TTL_SECONDS = 60;
+
+    /** 菜品 id 的布隆过滤器位图 */
+    public static final String DISH_BLOOM_KEY = "merchant:dish:bloom";
+
     private RedisKeys()
     {
     }

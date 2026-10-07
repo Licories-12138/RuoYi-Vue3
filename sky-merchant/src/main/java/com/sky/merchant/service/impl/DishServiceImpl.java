@@ -5,6 +5,7 @@ import java.util.*;
 import com.alibaba.fastjson2.JSONArray;
 import com.sky.common.core.redis.RedisCache;
 import com.sky.common.utils.DateUtils;
+import com.sky.merchant.cache.DishBloomFilter;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.RedisTemplate;
@@ -31,6 +32,8 @@ import com.sky.merchant.service.IDishService;
 public class DishServiceImpl implements IDishService 
 {
     @Autowired
+    private DishBloomFilter dishBloomFilter;
+    @Autowired
     private RedisCache redisCache;
     @Autowired
     private DishMapper dishMapper;
@@ -45,16 +48,40 @@ public class DishServiceImpl implements IDishService
     @Override
     public Dish selectDishById(Long id)
     {
-        // 判断是否为NULL，如果为NULL则从数据库查询
-        Dish dish = redisCache.getCacheObject(RedisKeys.DISH_DETAIL_PREFIX + id);
+        if (!dishBloomFilter.mightContain(id)){
+            log.info("布隆过滤器拦截：id = {}", id);
+            return null;      // 一定不存在，缓存和数据库都不用碰
+        }
+        // 缓存空值方案，避免缓存穿透
+        String key = RedisKeys.DISH_DETAIL_PREFIX + id;
+        Dish cached = redisCache.getCacheObject(key);
+
+        // 缓存命中
+        if (cached != null)
+        {
+            // 空值占位对象：id 有值但 name 为空，说明之前查库确认不存在
+            if (StringUtils.isEmpty(cached.getName()))
+            {
+                log.info("命中空值标记，直接返回 null：id = {}", id);
+                return null;
+            }
+            log.info("缓存命中真数据：id = {}", id);
+            return cached;
+        }
+
+        // 缓存未命中，查库
+        log.info("缓存未命中，查库 {}", id);
+        Dish dish = dishMapper.selectDishById(id);
         if (dish == null)
         {
-            log.info("从数据库查询菜品管理 {}", id);
-            dish = dishMapper.selectDishById(id);
-            redisCache.setCacheObject(RedisKeys.DISH_DETAIL_PREFIX + id, dish, RedisKeys.DISH_TTL_SECONDS, TimeUnit.SECONDS);
-        }else {
-            log.info("缓存命中 {}", dish);
+            log.info("缓存未命中，查库结果为空：id = {}", id);
+            // 缓存空值，防止缓存击穿
+            Dish empty = new Dish();
+            empty.setId(id);
+            redisCache.setCacheObject(key, empty, RedisKeys.DISH_EMPTY_TTL_SECONDS, TimeUnit.SECONDS);
+            return null;
         }
+        redisCache.setCacheObject(key, dish, RedisKeys.DISH_TTL_SECONDS, TimeUnit.SECONDS);
         return dish;
     }
 
@@ -104,6 +131,7 @@ public class DishServiceImpl implements IDishService
         dish.setCreateTime(DateUtils.getNowDate());
         int rows = dishMapper.insertDish(dish);
         insertDishFlavor(dish);
+        dishBloomFilter.add(dish.getId()); // ← 新增的 id 必须同步进过滤器
         redisCache.deleteObject(RedisKeys.DISH_ONSALE_KEY);
         return rows;
     }
