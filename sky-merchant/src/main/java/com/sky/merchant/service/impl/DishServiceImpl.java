@@ -49,6 +49,7 @@ public class DishServiceImpl implements IDishService
      * @param id 菜品管理主键
      * @return 菜品管理
      */
+    @SuppressWarnings("BusyWait")
     @Override
     public Dish selectDishById(Long id)
     {
@@ -117,8 +118,7 @@ public class DishServiceImpl implements IDishService
                 stringRedisTemplate.delete(lockKey);
             }
         }
-        // 5. 已尽力仍未拿到结果。这里【不能返回 null】——本方法 null 的契约是"菜品不存在"，
-        // 用它表示"我没等到"会让调用方把系统故障误判成"没有这道菜"。抛明确异常，让上层如实报错。
+        // 5. 抛明确异常
         log.warn("等锁预算用尽且未抢到兜底锁：id = {}", id);
         throw new ServiceException("服务繁忙，请稍后重试");
     }
