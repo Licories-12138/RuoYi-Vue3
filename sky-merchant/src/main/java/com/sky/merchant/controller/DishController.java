@@ -63,7 +63,7 @@ public class DishController extends BaseController
      * 获取菜品管理详细信息
      */
     @PreAuthorize("@ss.hasPermi('merchant:dish:query')")
-    @GetMapping(value = "/{id}")
+    @GetMapping(value = "/{id:\\d+}") // /merchant/dish/abc 直接 404，/merchant/dish/80 正常走
     public AjaxResult getInfo(@PathVariable("id") Long id)
     {
         return success(dishService.selectDishById(id));
