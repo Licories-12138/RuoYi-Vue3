@@ -23,9 +23,19 @@ public class DishBloomFilter implements ApplicationRunner{
     @Autowired
     private StringRedisTemplate stringRedisTemplate;
 
-    private static final String BLOOM_KEY = RedisKeys.DISH_BLOOM_KEY; //
-    private static final int BIT_SIZE = 10000;    // 位图总位数
-    private static final int HASH_COUNT = 7;      // 哈希函数个数
+    /*
+    m 决定误判率，k 决定每次查询的成本；调 m 是白拿，调 k 是要还的
+     */
+    private static final String BLOOM_KEY = RedisKeys.DISH_BLOOM_KEY;
+    private static final int EXPECTED_INSERTIONS = 100_000;   // 预期最大菜品数
+    private static final double FALSE_POSITIVE_RATE = 0.01;    // 目标误判率 1%
+
+    private static final int BIT_SIZE = (int) Math.ceil(
+            -EXPECTED_INSERTIONS * Math.log(FALSE_POSITIVE_RATE)
+                    / (Math.log(2) * Math.log(2)));            // ≈ 958,506
+
+    private static final int HASH_COUNT = Math.max(1, (int) Math.round(
+            (double) BIT_SIZE / EXPECTED_INSERTIONS * Math.log(2))); // ≈ 7
     /**
      * 将id添加到位图中
      * @param id 菜品id
@@ -44,9 +54,9 @@ public class DishBloomFilter implements ApplicationRunner{
      */
     public boolean mightContain(Long id) {
         int[] positions = positions(id);
-        // 获取 7 个位置 → 逐个 getBit
+        // 获取 k 个位置 → 逐个 getBit
         // 一遇到 false 立刻 return false（提前退出，这是性能关键）
-        // 7 个都通过才 return true
+        // k 个都通过才 return true
         for (int i = 0; i < HASH_COUNT; i++) {
             Boolean bit = stringRedisTemplate.opsForValue().getBit(BLOOM_KEY, positions[i]);
             if (!Boolean.TRUE.equals(bit)) {
@@ -56,18 +66,30 @@ public class DishBloomFilter implements ApplicationRunner{
         return true;
     }
 
+    /** MurmurHash3 的 fmix32：把低位信息扩散到高位，消除输入的线性相关性 */
+    private static int mix(int h) {
+        h ^= h >>> 16;
+        h *= 0x85ebca6b;
+        h ^= h >>> 13;
+        h *= 0xc2b2ae35;
+        h ^= h >>> 16;
+        return h;
+    }
+
     /**
-     * 根据id获取位图中对应的位数组，用于判断id是否可能在位图中
+     * 根据 id 计算它在位图中对应的所有位下标（同一个 id 的多个哈希位置）
+     *
      * @param id 菜品id
-     * @return 位数组
+     * @return 位下标数组，长度为 HASH_COUNT，每个元素落在 [0, BIT_SIZE)
      */
     private int[] positions(Long id) {
         int[] pos = new int[HASH_COUNT];
         String s    = String.valueOf(id);
-        int h1 = Objects.hash(s);              // 哈希一
-        int h2 = Objects.hash(s, "bloom-salt"); // 哈希二：换个盐，和 h1 无关联
+        int h1 = mix(Objects.hash(s));                 // ← 加一层混淆
+        int h2 = mix(Objects.hash(s, "bloom-salt"));   // ← 两处都要
+        int step = Math.floorMod(h2, BIT_SIZE - 1) + 1;   // 恒定落在 [1, BIT_SIZE-1]，永不为 0
         for (int i = 0; i < HASH_COUNT; i++) {
-            pos[i] = Math.floorMod(h1 + i * h2, BIT_SIZE);   // 用 h2 当步长，位置就散开了
+            pos[i] = Math.floorMod(h1 + i * step, BIT_SIZE);
         }
         return pos;
     }
