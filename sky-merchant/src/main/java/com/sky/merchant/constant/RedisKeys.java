@@ -37,6 +37,15 @@ public class RedisKeys
     /** 菜品 id 的布隆过滤器位图 */
     public static final String DISH_BLOOM_KEY = "merchant:dish:bloom";
 
+    /** 菜品详情重建锁前缀 */
+    public static final String DISH_LOCK_PREFIX = "merchant:dish:lock:";
+
+    /** 重建锁的过期时间（秒）：必须明显大于一次查库的耗时，否则锁会提前失效 */
+    public static final int DISH_LOCK_TTL_SECONDS = 10;
+
+    /** 没抢到锁时，最多等几轮 */
+    public static final int DISH_LOCK_RETRY_TIMES = 5;
+
     private RedisKeys()
     {
     }

@@ -1,5 +1,6 @@
 package com.sky.merchant.service.impl;
 
+import java.time.Duration;
 import java.util.*;
 
 import com.alibaba.fastjson2.JSONArray;
@@ -11,7 +12,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.data.redis.core.ZSetOperations;
 import org.springframework.stereotype.Service;
-
+import org.springframework.data.redis.core.StringRedisTemplate;
 import java.util.concurrent.TimeUnit;
 import com.sky.common.utils.StringUtils;
 import org.springframework.transaction.annotation.Transactional;
@@ -39,6 +40,8 @@ public class DishServiceImpl implements IDishService
     private DishMapper dishMapper;
     @Autowired
     RedisTemplate<Object, Object> redisTemplate;
+    @Autowired
+    private StringRedisTemplate stringRedisTemplate;
 
     /**
      * 查询菜品管理
@@ -69,20 +72,64 @@ public class DishServiceImpl implements IDishService
             return cached;
         }
 
-        // 缓存未命中，查库
-        log.info("缓存未命中，查库 {}", id);
-        Dish dish = dishMapper.selectDishById(id);
-        if (dish == null)
-        {
-            log.info("缓存未命中，查库结果为空：id = {}", id);
-            // 缓存空值，防止缓存击穿
-            Dish empty = new Dish();
-            empty.setId(id);
-            redisCache.setCacheObject(key, empty, RedisKeys.DISH_EMPTY_TTL_SECONDS, TimeUnit.SECONDS);
-            return null;
+        // 1.缓存未命中，进入重建流程
+        log.info("缓存未命中，开始重建：id = {}", id);
+        String lockKey = RedisKeys.DISH_LOCK_PREFIX + id;
+        // 2.抢锁: 带 TTL 的 SETNX（SET IF NOT EXIST + EXPIRE，一条命令原子完成
+        Boolean locked = stringRedisTemplate.opsForValue()
+                .setIfAbsent(lockKey, "1", Duration.ofSeconds(RedisKeys.DISH_LOCK_TTL_SECONDS));
+        if (Boolean.TRUE.equals(locked)) {
+            // 抢到锁,A线程
+            try {
+                // 2.1 双检：我排队等锁的这段时间，前一个持锁者可能已经把缓存建好了
+                Dish again = redisCache.getCacheObject(key);
+                if (again != null) {
+                    log.info("拿到锁后双检命中：id = {}", id);
+                    return StringUtils.isEmpty(again.getName()) ? null : again;
+                }
+                // 2.2 真查库
+                log.info("拿到锁，查库 {}", id);
+                Dish dish = dishMapper.selectDishById(id);
+                if (dish == null) {
+                    Dish empty = new Dish();
+                    empty.setId(id);
+                    redisCache.setCacheObject(key, empty, RedisKeys.DISH_EMPTY_TTL_SECONDS, TimeUnit.SECONDS);
+                    return null;
+                }
+                redisCache.setCacheObject(key, dish, RedisKeys.DISH_TTL_SECONDS, TimeUnit.SECONDS);
+                return dish;
+            } finally {
+                // 3) 无论成功、失败、异常，都必须把锁还回去
+                stringRedisTemplate.delete(lockKey);
+            }
         }
-        redisCache.setCacheObject(key, dish, RedisKeys.DISH_TTL_SECONDS, TimeUnit.SECONDS);
-        return dish;
+        // 3.未抢到锁,等一会儿再读缓存，最多 DISH_LOCK_RETRY_TIMES 轮
+        for (int i = 0; i < RedisKeys.DISH_LOCK_RETRY_TIMES; i++) {
+            try
+            {
+                Thread.sleep(50); // 等待 50 毫秒
+            }
+            catch (InterruptedException e)
+            {
+                Thread.currentThread().interrupt();   // 恢复中断标志，别吞掉
+                return null;
+            }
+
+            Dish retry = redisCache.getCacheObject(key);
+            if (retry != null)
+            {
+                log.info("等待 {} 轮后命中缓存：id = {}", i + 1, id);
+                return StringUtils.isEmpty(retry.getName()) ? null : retry;
+            }
+        }
+        // 4. 兜底：等不到了，自己查一次库
+        log.warn("等待锁超时，降级自己查库：id = {}", id);
+        Dish fallback = dishMapper.selectDishById(id);
+        if (fallback != null)
+        {
+            redisCache.setCacheObject(key, fallback, RedisKeys.DISH_TTL_SECONDS, TimeUnit.SECONDS);
+        }
+        return fallback;
     }
 
     /**
