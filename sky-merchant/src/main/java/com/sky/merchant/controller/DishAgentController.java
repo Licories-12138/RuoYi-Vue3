@@ -32,7 +32,7 @@ import java.util.concurrent.TimeUnit;
 public class DishAgentController
 {
     @Autowired
-    private RedisCache redisCache; // Fixed: Added missing semicolon
+    private RedisCache redisCache;
     private final ChatClient chatClient;
     private final ChatClient parseClient;
 
@@ -97,7 +97,7 @@ public class DishAgentController
     }
 
     @GetMapping("/parse")
-    public AjaxResult parse1(@RequestParam String message)
+    public AjaxResult parse(@RequestParam String message)
     {
         OrderRequest request = parseClient.prompt()
                 .user(message)
