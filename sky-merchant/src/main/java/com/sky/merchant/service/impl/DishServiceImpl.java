@@ -5,6 +5,7 @@ import java.util.*;
 
 import com.alibaba.fastjson2.JSONArray;
 import com.sky.common.core.redis.RedisCache;
+import com.sky.common.exception.ServiceException;
 import com.sky.common.utils.DateUtils;
 import com.sky.merchant.cache.DishBloomFilter;
 import lombok.extern.slf4j.Slf4j;
@@ -81,55 +82,75 @@ public class DishServiceImpl implements IDishService
         if (Boolean.TRUE.equals(locked)) {
             // 抢到锁,A线程
             try {
-                // 2.1 双检：我排队等锁的这段时间，前一个持锁者可能已经把缓存建好了
-                Dish again = redisCache.getCacheObject(key);
-                if (again != null) {
-                    log.info("拿到锁后双检命中：id = {}", id);
-                    return StringUtils.isEmpty(again.getName()) ? null : again;
-                }
-                // 2.2 真查库
-                log.info("拿到锁，查库 {}", id);
-                Dish dish = dishMapper.selectDishById(id);
-                if (dish == null) {
-                    Dish empty = new Dish();
-                    empty.setId(id);
-                    redisCache.setCacheObject(key, empty, RedisKeys.DISH_EMPTY_TTL_SECONDS, TimeUnit.SECONDS);
-                    return null;
-                }
-                redisCache.setCacheObject(key, dish, RedisKeys.DISH_TTL_SECONDS, TimeUnit.SECONDS);
-                return dish;
+                log.info("拿到锁，重建缓存：id = {}", id);
+                return loadAndCache(id, key);
             } finally {
                 // 3) 无论成功、失败、异常，都必须把锁还回去
                 stringRedisTemplate.delete(lockKey);
             }
         }
-        // 3.未抢到锁,等一会儿再读缓存，最多 DISH_LOCK_RETRY_TIMES 轮
-        for (int i = 0; i < RedisKeys.DISH_LOCK_RETRY_TIMES; i++) {
-            try
-            {
-                Thread.sleep(50); // 等待 50 毫秒
-            }
-            catch (InterruptedException e)
-            {
+        // 3. 没抢到锁：在预算内轮询缓存。预算与锁 TTL 同源（预算 ≤ TTL），
+        // 保证"只要锁还在有效期内，我就还有机会等到结果"
+        long deadline = System.currentTimeMillis() + RedisKeys.DISH_LOCK_WAIT_MILLIS;
+        while (System.currentTimeMillis() < deadline) {
+            try {
+                Thread.sleep(RedisKeys.DISH_LOCK_RETRY_INTERVAL_MILLIS);
+            } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();   // 恢复中断标志，别吞掉
                 return null;
             }
-
             Dish retry = redisCache.getCacheObject(key);
-            if (retry != null)
-            {
-                log.info("等待 {} 轮后命中缓存：id = {}", i + 1, id);
+            if (retry != null) {
+                log.info("等锁期间命中缓存：id = {}", id);
                 return StringUtils.isEmpty(retry.getName()) ? null : retry;
             }
         }
-        // 4. 兜底：等不到了，自己查一次库
-        log.warn("等待锁超时，降级自己查库：id = {}", id);
-        Dish fallback = dishMapper.selectDishById(id);
-        if (fallback != null)
-        {
-            redisCache.setCacheObject(key, fallback, RedisKeys.DISH_TTL_SECONDS, TimeUnit.SECONDS);
+        // 4. 预算用尽：兜底也要抢锁，抢到才查库。
+        // 若无条件查库，所有等超时的线程会在同一瞬间一起砸向数据库，比不加锁更尖。
+        Boolean relocked = stringRedisTemplate.opsForValue()
+                .setIfAbsent(lockKey, "1", Duration.ofSeconds(RedisKeys.DISH_LOCK_TTL_SECONDS));
+        if (Boolean.TRUE.equals(relocked)) {
+            try {
+                log.info("等锁超时后抢到锁，重建缓存：id = {}", id);
+                return loadAndCache(id, key);
+            } finally {
+                stringRedisTemplate.delete(lockKey);
+            }
         }
-        return fallback;
+        // 5. 已尽力仍未拿到结果。这里【不能返回 null】——本方法 null 的契约是"菜品不存在"，
+        // 用它表示"我没等到"会让调用方把系统故障误判成"没有这道菜"。抛明确异常，让上层如实报错。
+        log.warn("等锁预算用尽且未抢到兜底锁：id = {}", id);
+        throw new ServiceException("服务繁忙，请稍后重试");
+    }
+
+    /**
+     * 持锁期间重建缓存：双检 → 查库 → 回填。
+     * 查不到时写"空值标记"（只设 id、name 为空），后续请求命中它即可直接返回 null，不再打库。
+     * 调用方必须已持有 lockKey 对应的锁，本方法只负责重建，不负责加锁 / 放锁。
+     *
+     * @param id  菜品 id
+     * @param key 菜品详情缓存 key（RedisKeys.DISH_DETAIL_PREFIX + id）
+     * @return 菜品的真实数据；确实不存在时返回 null（此时已写好空值标记）
+     */
+    private Dish loadAndCache(Long id, String key)
+    {
+        // 双检：等锁这段时间，前一个持锁者可能已经把缓存建好了
+        Dish again = redisCache.getCacheObject(key);
+        if (again != null) {
+            log.info("双检命中：id = {}", id);
+            return StringUtils.isEmpty(again.getName()) ? null : again;
+        }
+        // 真查库
+        log.info("查库 {}", id);
+        Dish dish = dishMapper.selectDishById(id);
+        if (dish == null) {
+            Dish empty = new Dish();
+            empty.setId(id);
+            redisCache.setCacheObject(key, empty, RedisKeys.DISH_EMPTY_TTL_SECONDS, TimeUnit.SECONDS);
+            return null;
+        }
+        redisCache.setCacheObject(key, dish, RedisKeys.DISH_TTL_SECONDS, TimeUnit.SECONDS);
+        return dish;
     }
 
     /**

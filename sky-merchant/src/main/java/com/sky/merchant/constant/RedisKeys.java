@@ -43,8 +43,11 @@ public class RedisKeys
     /** 重建锁的过期时间（秒）：必须明显大于一次查库的耗时，否则锁会提前失效 */
     public static final int DISH_LOCK_TTL_SECONDS = 10;
 
-    /** 没抢到锁时，最多等几轮 */
-    public static final int DISH_LOCK_RETRY_TIMES = 5;
+    /** 没抢到锁后最多等多久（毫秒）：必须 ≤ 锁 TTL×1000 */
+    public static final long DISH_LOCK_WAIT_MILLIS = 2000L;
+
+    /** 等锁轮询间隔（毫秒）：间隔 × 轮数 ≈ 等待预算 */
+    public static final long DISH_LOCK_RETRY_INTERVAL_MILLIS = 50L;
 
     private RedisKeys()
     {
