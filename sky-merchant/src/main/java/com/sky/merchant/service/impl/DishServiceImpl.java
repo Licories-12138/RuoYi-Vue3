@@ -125,8 +125,9 @@ public class DishServiceImpl implements IDishService
 
     /**
      * 根据id查询菜品管理
-     * @param id
-     * @return
+     * 现在手上有没有旧数据，可以先给
+     * 有（热 key 过期）→ 一个线程去后台重建，其余线程立刻拿走旧数据
+     * 没有（冷启动 / 刚清过缓存）→ 没东西可给，只能同步重建
      */
     @Override
     public Dish selectDishByIdLogical(Long id) {
