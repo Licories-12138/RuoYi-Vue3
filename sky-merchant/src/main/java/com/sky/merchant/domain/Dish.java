@@ -1,5 +1,6 @@
 package com.sky.merchant.domain;
 
+import java.io.Serial;
 import java.math.BigDecimal;
 import java.util.List;
 import org.apache.commons.lang3.builder.ToStringBuilder;
@@ -15,6 +16,7 @@ import com.sky.common.core.domain.BaseEntity;
  */
 public class Dish extends BaseEntity
 {
+    @Serial
     private static final long serialVersionUID = 1L;
 
     /** 主键 */
