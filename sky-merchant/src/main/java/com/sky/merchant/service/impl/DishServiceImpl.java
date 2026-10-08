@@ -3,6 +3,7 @@ package com.sky.merchant.service.impl;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.*;
+
 import com.alibaba.fastjson2.JSON;
 import com.alibaba.fastjson2.JSONArray;
 import com.alibaba.fastjson2.TypeReference;
@@ -19,8 +20,11 @@ import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.data.redis.core.ZSetOperations;
 import org.springframework.stereotype.Service;
 import org.springframework.data.redis.core.StringRedisTemplate;
+
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+
 import com.sky.common.utils.StringUtils;
 import org.springframework.transaction.annotation.Transactional;
 import com.sky.merchant.domain.DishFlavor;
@@ -31,14 +35,13 @@ import com.sky.merchant.service.IDishService;
 
 /**
  * 菜品管理Service业务层处理
- * 
+ *
  * @author ruoyi
  * @date 2026-10-04
  */
 @Service
 @Slf4j
-public class DishServiceImpl implements IDishService 
-{
+public class DishServiceImpl implements IDishService {
     @Autowired
     private DishBloomFilter dishBloomFilter;
     @Autowired
@@ -55,14 +58,14 @@ public class DishServiceImpl implements IDishService
 
     /**
      * 查询菜品管理
+     *
      * @param id 菜品管理主键
      * @return 菜品管理
      */
     @SuppressWarnings("BusyWait")
     @Override
-    public Dish selectDishById(Long id)
-    {
-        if (!dishBloomFilter.mightContain(id)){
+    public Dish selectDishById(Long id) {
+        if (!dishBloomFilter.mightContain(id)) {
             log.info("布隆过滤器拦截：id = {}", id);
             return null;      // 一定不存在，缓存和数据库都不用碰
         }
@@ -71,11 +74,9 @@ public class DishServiceImpl implements IDishService
         Dish cached = redisCache.getCacheObject(key);
 
         // 缓存命中
-        if (cached != null)
-        {
+        if (cached != null) {
             // 空值占位对象：id 有值但 name 为空，说明之前查库确认不存在
-            if (StringUtils.isEmpty(cached.getName()))
-            {
+            if (StringUtils.isEmpty(cached.getName())) {
                 log.info("命中空值标记，直接返回 null：id = {}", id);
                 return null;
             }
@@ -173,7 +174,7 @@ public class DishServiceImpl implements IDishService
                 try {
                     log.info("没有旧数据，同步重建：id = {}", id);
                     return rebuildLogical(id, key);
-                }finally {
+                } finally {
                     stringRedisTemplate.delete(lockKey); // 释放锁
                 }
             }
@@ -195,7 +196,7 @@ public class DishServiceImpl implements IDishService
             return isEmptyDish(old) ? null : old;
         }
         // 5. 没抢到锁
-        if (old != null){
+        if (old != null) {
             log.info("未抢到重建锁，直接返回旧数据：id = {}", id);
             return isEmptyDish(old) ? null : old;
         }
@@ -206,7 +207,8 @@ public class DishServiceImpl implements IDishService
 
     /**
      * 查库 + 回写逻辑缓存
-     * @param id 菜品 id
+     *
+     * @param id  菜品 id
      * @param key 菜品详情缓存 key（RedisKeys.DISH_LOGICAL_PREFIX + id）
      * @return 菜品的真实数据；确实不存在时返回 null（此时已写好空值标记）
      */
@@ -217,7 +219,9 @@ public class DishServiceImpl implements IDishService
             dish.setId(id); // 空壳标记
         }
         RedisData<Dish> redisData = new RedisData<>();
-        redisData.setExpireTime(LocalDateTime.now().plusSeconds(RedisKeys.DISH_LOGICAL_EXPIRE_SECONDS));
+        redisData.setExpireTime(LocalDateTime.now().plusSeconds(
+                RedisKeys.DISH_LOGICAL_EXPIRE_SECONDS
+                        + ThreadLocalRandom.current().nextInt(RedisKeys.DISH_LOGICAL_TTL_JITTER_SECONDS)));
         redisData.setData(dish);
         stringRedisTemplate.opsForValue().set(key, JSON.toJSONString(redisData),
                 Duration.ofSeconds(RedisKeys.DISH_PHYSICAL_TTL_SECONDS));
@@ -243,8 +247,7 @@ public class DishServiceImpl implements IDishService
      * @param key 菜品详情缓存 key（RedisKeys.DISH_DETAIL_PREFIX + id）
      * @return 菜品的真实数据；确实不存在时返回 null（此时已写好空值标记）
      */
-    private Dish loadAndCache(Long id, String key)
-    {
+    private Dish loadAndCache(Long id, String key) {
         // 双检：等锁这段时间，前一个持锁者可能已经把缓存建好了
         Dish again = redisCache.getCacheObject(key);
         if (again != null) {
@@ -257,10 +260,14 @@ public class DishServiceImpl implements IDishService
         if (dish == null) {
             Dish empty = new Dish();
             empty.setId(id);
+            // 空壳不用加随机,因为布隆过滤器在前面拦着，扫不存在的 id 根本走不到缓存这层
             redisCache.setCacheObject(key, empty, RedisKeys.DISH_EMPTY_TTL_SECONDS, TimeUnit.SECONDS);
             return null;
         }
-        redisCache.setCacheObject(key, dish, RedisKeys.DISH_TTL_SECONDS, TimeUnit.SECONDS);
+        // 随机设置缓存时间,防止缓存雪崩
+        int ttl = RedisKeys.DISH_TTL_SECONDS
+                + ThreadLocalRandom.current().nextInt(RedisKeys.DISH_TTL_JITTER_SECONDS);
+        redisCache.setCacheObject(key, dish, ttl, TimeUnit.SECONDS);
         return dish;
     }
 
@@ -287,26 +294,24 @@ public class DishServiceImpl implements IDishService
 
     /**
      * 查询菜品管理列表
-     * 
+     *
      * @param dish 菜品管理
      * @return 菜品管理
      */
     @Override
-    public List<Dish> selectDishList(Dish dish)
-    {
+    public List<Dish> selectDishList(Dish dish) {
         return dishMapper.selectDishList(dish);
     }
 
     /**
      * 新增菜品管理
-     * 
+     *
      * @param dish 菜品管理
      * @return 结果
      */
     @Transactional
     @Override
-    public int insertDish(Dish dish)
-    {
+    public int insertDish(Dish dish) {
         dish.setCreateTime(DateUtils.getNowDate());
         int rows = dishMapper.insertDish(dish);
         insertDishFlavor(dish);
@@ -317,14 +322,13 @@ public class DishServiceImpl implements IDishService
 
     /**
      * 修改菜品管理
-     * 
+     *
      * @param dish 菜品管理
      * @return 结果
      */
     @Transactional
     @Override
-    public int updateDish(Dish dish)
-    {
+    public int updateDish(Dish dish) {
         dish.setUpdateTime(DateUtils.getNowDate());
         dishMapper.deleteDishFlavorByDishId(dish.getId());
         insertDishFlavor(dish);
@@ -337,14 +341,13 @@ public class DishServiceImpl implements IDishService
 
     /**
      * 批量删除菜品管理
-     * 
+     *
      * @param ids 需要删除的菜品管理主键
      * @return 结果
      */
     @Transactional
     @Override
-    public int deleteDishByIds(Long[] ids)
-    {
+    public int deleteDishByIds(Long[] ids) {
         int rows = dishMapper.deleteDishByIds(ids);
         dishMapper.deleteDishFlavorByDishIds(ids);
         redisCache.deleteObject(RedisKeys.DISH_ONSALE_KEY);
@@ -356,14 +359,13 @@ public class DishServiceImpl implements IDishService
 
     /**
      * 删除菜品管理信息
-     * 
+     *
      * @param id 菜品管理主键
      * @return 结果
      */
     @Transactional
     @Override
-    public int deleteDishById(Long id)
-    {
+    public int deleteDishById(Long id) {
         dishMapper.deleteDishFlavorByDishId(id);
         int rows = dishMapper.deleteDishById(id);      // 先改库
         redisCache.deleteObject(RedisKeys.DISH_ONSALE_KEY);      // 再删缓存
@@ -376,31 +378,26 @@ public class DishServiceImpl implements IDishService
      * 为什么必须一起删：两条路写的是不同的 key、不同的格式，
      * 只删一条会让另一条继续返回旧菜名，直到它自己过期（最长 30 分钟）。
      */
-    private void clearDishCache(Long id)
-    {
+    private void clearDishCache(Long id) {
         redisCache.deleteObject(RedisKeys.DISH_DETAIL_PREFIX + id);    // 裸 Dish
         redisCache.deleteObject(RedisKeys.DISH_LOGICAL_PREFIX + id);   // RedisData 包装
     }
 
     /**
      * 新增菜品口味关系信息
-     * 
+     *
      * @param dish 菜品管理对象
      */
-    public void insertDishFlavor(Dish dish)
-    {
+    public void insertDishFlavor(Dish dish) {
         List<DishFlavor> dishFlavorList = dish.getDishFlavorList();
         Long id = dish.getId();
-        if (StringUtils.isNotNull(dishFlavorList))
-        {
+        if (StringUtils.isNotNull(dishFlavorList)) {
             List<DishFlavor> list = new ArrayList<>();
-            for (DishFlavor dishFlavor : dishFlavorList)
-            {
+            for (DishFlavor dishFlavor : dishFlavorList) {
                 dishFlavor.setDishId(id);
                 list.add(dishFlavor);
             }
-            if (!list.isEmpty())
-            {
+            if (!list.isEmpty()) {
                 dishMapper.batchDishFlavor(list);
             }
         }
@@ -425,7 +422,7 @@ public class DishServiceImpl implements IDishService
         for (ZSetOperations.TypedTuple<Object> tuple : tuples) {
             Map<String, Object> map = new LinkedHashMap<>();
             // 获取名次
-            map.put("rank", rank++ );
+            map.put("rank", rank++);
             // 获取菜品信息
             map.put("name", tuple.getValue());
             // 获取热度分数（注意判空，虽然 WithScores 一般不会为空，但严谨起见）

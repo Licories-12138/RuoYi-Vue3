@@ -22,6 +22,12 @@ public class RedisKeys
     /** 菜品对象与在售列表的 TTL（秒）：30 分钟 */
     public static final int DISH_TTL_SECONDS = 30 * 60;
 
+    /** 详情缓存 TTL 的随机偏移上限（秒）：5 分钟。实际 TTL = DISH_TTL_SECONDS + random(0, 300) */
+    public static final int DISH_TTL_JITTER_SECONDS = 5 * 60;
+
+    /** 逻辑过期时间的随机偏移上限（秒）：5 分钟。让批量写入的 key 在 30~35 分钟内陆续过期 */
+    public static final int DISH_LOGICAL_TTL_JITTER_SECONDS = 5 * 60;
+
     /** 问答答案缓存前缀，后面拼 md5(问题)。例：merchant:agent:chat:3fbca053... */
     public static final String CHAT_CACHE_PREFIX = "merchant:agent:chat:";
 
