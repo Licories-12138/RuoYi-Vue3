@@ -46,6 +46,30 @@ public class RedisKeys
     /** 等锁轮询间隔（毫秒）：间隔 × 轮数 ≈ 等待预算 */
     public static final long DISH_LOCK_RETRY_INTERVAL_MILLIS = 50L;
 
+    /**
+     * 逻辑过期版详情缓存前缀。例：merchant:dish:detail:logical:80
+     * 刻意拼在 DISH_DETAIL_PREFIX <b>之内</b> —— clearCache 按 DISH_DETAIL_PREFIX + "*" 扫描，
+     * 这样它天然会被清掉；若另起一个 merchant:dish:logical: 前缀，这个 key 就永远清不掉了。
+     */
+    public static final String DISH_LOGICAL_PREFIX = DISH_DETAIL_PREFIX + "logical:";
+
+    /**
+     * 逻辑过期路径的重建锁前缀。例：merchant:dish:lock:logical:80
+     * 为什么不和 Step 3 共用同一把锁：两条路径的产物不同（一条写裸 Dish，一条写 RedisData），
+     * 共锁会让 Step 3 的等待者白等 2 秒后抛异常 —— 各锁各的，互不干扰。
+     */
+    public static final String DISH_LOGICAL_LOCK_PREFIX = DISH_LOCK_PREFIX + "logical:";
+
+    /** 逻辑过期时长（秒）：30 分钟。到点后不删 key，由业务判断过期并异步重建 */
+    public static final int DISH_LOGICAL_EXPIRE_SECONDS = 30 * 60;
+
+    /**
+     * 逻辑过期缓存的物理 TTL（秒）：24 小时。
+     * 只作兜底 —— 正常情况下靠逻辑过期时间控制；万一重建一直失败，
+     * 也不至于让一条脏数据永久驻留。
+     */
+    public static final int DISH_PHYSICAL_TTL_SECONDS = 24 * 60 * 60;
+
     private RedisKeys()
     {
     }
