@@ -1,5 +1,6 @@
 package com.sky.common.core.domain;
 
+import java.io.Serial;
 import java.io.Serializable;
 import java.util.Date;
 import java.util.HashMap;
@@ -15,6 +16,7 @@ import com.fasterxml.jackson.annotation.JsonInclude;
  */
 public class BaseEntity implements Serializable
 {
+    @Serial
     private static final long serialVersionUID = 1L;
 
     /** 搜索值 */

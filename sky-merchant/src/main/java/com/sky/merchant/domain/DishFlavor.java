@@ -5,6 +5,8 @@ import org.apache.commons.lang3.builder.ToStringStyle;
 import com.sky.common.annotation.Excel;
 import com.sky.common.core.domain.BaseEntity;
 
+import java.io.Serial;
+
 /**
  * 菜品口味关系对象 tb_dish_flavor
  * 
@@ -13,6 +15,7 @@ import com.sky.common.core.domain.BaseEntity;
  */
 public class DishFlavor extends BaseEntity
 {
+    @Serial
     private static final long serialVersionUID = 1L;
 
     /** 主键 */

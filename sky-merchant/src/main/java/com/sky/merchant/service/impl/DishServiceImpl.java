@@ -3,7 +3,6 @@ package com.sky.merchant.service.impl;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.*;
-
 import com.alibaba.fastjson2.JSON;
 import com.alibaba.fastjson2.JSONArray;
 import com.alibaba.fastjson2.TypeReference;
@@ -14,17 +13,17 @@ import com.sky.merchant.cache.DishBloomFilter;
 import com.sky.merchant.cache.RedisData;
 import com.sky.merchant.config.CacheRebuildConfig;
 import lombok.extern.slf4j.Slf4j;
+import org.redisson.api.RedissonClient;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.data.redis.core.ZSetOperations;
 import org.springframework.stereotype.Service;
 import org.springframework.data.redis.core.StringRedisTemplate;
-
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
-
 import com.sky.common.utils.StringUtils;
 import org.springframework.transaction.annotation.Transactional;
 import com.sky.merchant.domain.DishFlavor;
@@ -35,6 +34,21 @@ import com.sky.merchant.service.IDishService;
 
 /**
  * 菜品管理Service业务层处理
+ *
+ * <h3>缓存读写姿势：本类里同时存在三套，加新 key 前先看清用哪套</h3>
+ * <table border="1">
+ *   <tr><th>注入的模板</th><th>序列化器</th><th>适用 key</th></tr>
+ *   <tr><td>{@code redisCache}（若依封装）</td><td>FastJson2</td>
+ *       <td>{@code DISH_ONSALE_KEY}（在售列表）</td></tr>
+ *   <tr><td>{@code stringRedisTemplate}</td><td>纯字符串</td>
+ *       <td>{@code DISH_DETAIL_PREFIX} / {@code DISH_LOGICAL_PREFIX}（详情两条路径）</td></tr>
+ *   <tr><td>{@code redisTemplate<Object,Object>}</td><td>泛型对象</td>
+ *       <td>{@code DISH_HOT_KEY}（ZSet 热榜）</td></tr>
+ * </table>
+ *
+ * ⚠️ 三套写出来的字节形态互不兼容（读的时候必须用同一个模板），
+ * 所以 key 之间不能串用。详情两条路径统一走 StringRedisTemplate + RedisData 包装，
+ * 是为了让"空值标记"和"真数据"落在同一个类型上 —— 见 {@link #readCacheEntry}。
  *
  * @author ruoyi
  * @date 2026-10-04
@@ -55,6 +69,17 @@ public class DishServiceImpl implements IDishService {
     @Autowired
     @Qualifier(CacheRebuildConfig.EXECUTOR_BEAN_NAME)
     private ThreadPoolExecutor rebuildExecutor;
+    @Autowired
+    private RedissonClient redissonClient;
+    /**
+     * 菜品缓存条目的类型令牌，两条路径共用。
+     * 泛型必须显式写死：TypeReference 靠匿名子类的 getGenericSuperclass() 拿类型信息，
+     * 一旦上下文没有明确目标类型（如 var / 赋给 Object），菱形推断会退化成 Object，
+     * 解析出来是 JSONObject 而不是 Dish —— 且编译通过，属于静默失败。
+     */
+    @SuppressWarnings("Convert2Diamond")
+    private static final TypeReference<RedisData<Dish>> DISH_CACHE_TYPE =
+            new TypeReference<RedisData<Dish>>() {};
 
     /**
      * 查询菜品管理
@@ -71,16 +96,14 @@ public class DishServiceImpl implements IDishService {
         }
         // 缓存空值方案，避免缓存穿透
         String key = RedisKeys.DISH_DETAIL_PREFIX + id;
-        Dish cached = redisCache.getCacheObject(key);
-
-        // 缓存命中
-        if (cached != null) {
-            // 空值占位对象：id 有值但 name 为空，说明之前查库确认不存在
-            if (StringUtils.isEmpty(cached.getName())) {
+        RedisData<Dish> rd = readCacheEntry(key);
+        if (rd != null) {
+            Dish cached = rd.getData();          // ← 只取一次
+            if (cached == null) {
                 log.info("命中空值标记，直接返回 null：id = {}", id);
-                return null;
+            } else {
+                log.info("缓存命中真数据：id = {}", id);
             }
-            log.info("缓存命中真数据：id = {}", id);
             return cached;
         }
 
@@ -110,10 +133,12 @@ public class DishServiceImpl implements IDishService {
                 Thread.currentThread().interrupt();   // 恢复中断标志，别吞掉
                 return null;
             }
-            Dish retry = redisCache.getCacheObject(key);
+            // 等一下再读缓存：读的是和 loadAndCache 同一种格式（RedisData 包装）
+            RedisData<Dish> retry = readCacheEntry(key);
             if (retry != null) {
-                log.info("等锁期间命中缓存：id = {}", id);
-                return StringUtils.isEmpty(retry.getName()) ? null : retry;
+                Dish cached = retry.getData();
+                log.info(cached == null ? "等锁期间命中空值标记：id = {}" : "等锁期间命中缓存：id = {}", id);
+                return cached;          // data 为 null 就是空值标记
             }
         }
         // 4. 预算用尽：兜底也要抢锁，抢到才查库。
@@ -139,7 +164,6 @@ public class DishServiceImpl implements IDishService {
      * 有（热 key 过期）→ 一个线程去后台重建，其余线程立刻拿走旧数据
      * 没有（冷启动 / 刚清过缓存）→ 没东西可给，只能同步重建
      */
-    @SuppressWarnings("Convert2Diamond") // TypeReference 的泛型必须写死，不能用 <>，见 RedisData javadoc
     @Override
     public Dish selectDishByIdLogical(Long id) {
         // 1. 布隆过滤器
@@ -148,21 +172,15 @@ public class DishServiceImpl implements IDishService {
             return null;
         }
 
-        // 2. 读缓存 + 反序列化
+        // 2. 读缓存 + 反序列化（和另外两条路径共用同一个读法）
         String key = RedisKeys.DISH_LOGICAL_PREFIX + id;
-        String json = stringRedisTemplate.opsForValue().get(key);
-        RedisData<Dish> redisData = StringUtils.isEmpty(json)
-                ? null
-                : JSON.parseObject(json, new TypeReference<RedisData<Dish>>() {
-        });
-        Dish old = (redisData == null) ? null : redisData.getData();
+        RedisData<Dish> rd = readCacheEntry(key);           // null = 缓存里没记录
+        Dish old = (rd == null) ? null : rd.getData();      // 直接判 rd
 
         // 3. 快路径: 没过期
-        if (redisData != null
-                && redisData.getExpireTime() != null
-                && redisData.getExpireTime().isAfter(LocalDateTime.now())) {
+        if (rd != null && rd.getExpireTime() != null && rd.getExpireTime().isAfter(LocalDateTime.now())) {
             log.info("逻辑未过期，直接返回：id = {}", id);
-            return isEmptyDish(old) ? null : old;
+            return old;   // old 为 null 就代表"不存在"，语义自洽
         }
         // 4. 重建 -- 抢锁
         String lockKey = RedisKeys.DISH_LOGICAL_LOCK_PREFIX + id;
@@ -184,25 +202,28 @@ public class DishServiceImpl implements IDishService {
                关键：submit() 只是把任务丢进队列就返回，不等它跑完 —
                所以下面这行 return 是"立刻"执行的，请求总耗时 ≈ 无锁水平。
              */
-            rebuildExecutor.submit(() -> {
-                try {
-                    rebuildLogical(id, key);
-                } catch (Exception e) {
-                    log.error("异步重建缓存失败：id = {}", id, e);
-                } finally {
-                    stringRedisTemplate.delete(lockKey); // 释放锁
-                }
-            });
-            return isEmptyDish(old) ? null : old;
+            try {
+                rebuildExecutor.submit(() -> {
+                    try {
+                        rebuildLogical(id, key);
+                    } finally {
+                        stringRedisTemplate.delete(lockKey);   // 重建完（或失败）放锁
+                    }
+                });
+            } catch (RejectedExecutionException e) {
+                stringRedisTemplate.delete(lockKey);           // 提交失败，锁得自己还
+                log.warn("重建任务被拒绝，锁已归还：id = {}", id);
+            }
+            return old;
         }
         // 5. 没抢到锁
-        if (old != null) {
+        if (rd != null) {
             log.info("未抢到重建锁，直接返回旧数据：id = {}", id);
-            return isEmptyDish(old) ? null : old;
+            return old;   // 有记录就直接给（null 也行）
         }
         // 冷启动 + 别人正在重建: 兜底自己查一次，保证功能可用
         log.warn("冷启动且未抢到锁，兜底直接查库：id = {}", id);
-        return dishMapper.selectDishById(id);
+        return dishMapper.selectDishById(id);  // 只有真的没记录才兜底查库
     }
 
     /**
@@ -213,34 +234,21 @@ public class DishServiceImpl implements IDishService {
      * @return 菜品的真实数据；确实不存在时返回 null（此时已写好空值标记）
      */
     private Dish rebuildLogical(Long id, String key) {
-        Dish dish = dishMapper.selectDishById(id);
-        if (dish == null) {
-            dish = new Dish();
-            dish.setId(id); // 空壳标记
-        }
+        Dish dish = dishMapper.selectDishById(id); // 可能就是 null
         RedisData<Dish> redisData = new RedisData<>();
         redisData.setExpireTime(LocalDateTime.now().plusSeconds(
                 RedisKeys.DISH_LOGICAL_EXPIRE_SECONDS
                         + ThreadLocalRandom.current().nextInt(RedisKeys.DISH_LOGICAL_TTL_JITTER_SECONDS)));
-        redisData.setData(dish);
+        redisData.setData(dish); // ★ 查不到就存 null，不再造空壳
         stringRedisTemplate.opsForValue().set(key, JSON.toJSONString(redisData),
                 Duration.ofSeconds(RedisKeys.DISH_PHYSICAL_TTL_SECONDS));
         log.info("逻辑缓存重建完成：id = {}, 下次过期于 = {}", id, redisData.getExpireTime());
-        return isEmptyDish(dish) ? null : dish;
-    }
-
-    /**
-     * 空壳判断：没有 name 就说明这是"查过、确实不存在"的标记
-     * 判断是不是"空值标记"对象（Step 1 缓存空值方案留下的占位）。
-     * 判据：id 有值但 name 为空。
-     */
-    private boolean isEmptyDish(Dish dish) {
-        return dish == null || StringUtils.isEmpty(dish.getName());
+        return dish;  // null 就是"不存在"
     }
 
     /**
      * 持锁期间重建缓存：双检 → 查库 → 回填。
-     * 查不到时写"空值标记"（只设 id、name 为空），后续请求命中它即可直接返回 null，不再打库。
+     * 查不到时写"空值标记"（data 为 null 的 RedisData），后续请求命中它即可直接返回 null，不再打库。
      * 调用方必须已持有 lockKey 对应的锁，本方法只负责重建，不负责加锁 / 放锁。
      *
      * @param id  菜品 id
@@ -249,26 +257,44 @@ public class DishServiceImpl implements IDishService {
      */
     private Dish loadAndCache(Long id, String key) {
         // 双检：等锁这段时间，前一个持锁者可能已经把缓存建好了
-        Dish again = redisCache.getCacheObject(key);
-        if (again != null) {
+        // 读的是同一种格式，才能直接判 data 是否为 null
+        RedisData<Dish> rd = readCacheEntry(key);
+        if (rd != null) {
             log.info("双检命中：id = {}", id);
-            return StringUtils.isEmpty(again.getName()) ? null : again;
+            return rd.getData();
         }
         // 真查库
         log.info("查库 {}", id);
         Dish dish = dishMapper.selectDishById(id);
-        if (dish == null) {
-            Dish empty = new Dish();
-            empty.setId(id);
-            // 空壳不用加随机,因为布隆过滤器在前面拦着，扫不存在的 id 根本走不到缓存这层
-            redisCache.setCacheObject(key, empty, RedisKeys.DISH_EMPTY_TTL_SECONDS, TimeUnit.SECONDS);
+        RedisData<Dish> entry = new RedisData<>();
+        entry.setData(dish);  // 查不到就是 null
+        /*
+           两条分支的 TTL 策略不同，理由不一样：
+           - 命中空值（dish == null）：用固定的 DISH_EMPTY_TTL_SECONDS（60 秒），不加随机。
+             "不存在"是一个短时效结论，60 秒后自然重查，能立刻感知到新建的菜品；
+             且扫不存在 id 的请求会被布隆过滤器拦在前面，根本走不到这里，所以不需要靠随机抖散。
+           - 命中真数据：用 DISH_TTL_SECONDS + 随机抖动。
+             加随机是为了防雪崩 —— 批量写入的 key 不能在同一秒集体失效，
+             否则请求会在那一瞬间全压到 MySQL 上。
+         */
+        int ttl = (dish == null)
+                ? RedisKeys.DISH_EMPTY_TTL_SECONDS
+                : RedisKeys.DISH_TTL_SECONDS
+                  + ThreadLocalRandom.current().nextInt(RedisKeys.DISH_TTL_JITTER_SECONDS);
+        stringRedisTemplate.opsForValue().set(key, JSON.toJSONString(entry), Duration.ofSeconds(ttl));
+        return dish;
+    }
+
+    /**
+     * 读缓存条目。
+     * 返回 null = 缓存里没有记录；返回的对象里 data 为 null = 空值标记（查过、不存在）。
+     */
+    private RedisData<Dish> readCacheEntry(String key) {
+        String json = stringRedisTemplate.opsForValue().get(key);
+        if (StringUtils.isEmpty(json)) {
             return null;
         }
-        // 随机设置缓存时间,防止缓存雪崩
-        int ttl = RedisKeys.DISH_TTL_SECONDS
-                + ThreadLocalRandom.current().nextInt(RedisKeys.DISH_TTL_JITTER_SECONDS);
-        redisCache.setCacheObject(key, dish, ttl, TimeUnit.SECONDS);
-        return dish;
+        return JSON.parseObject(json, DISH_CACHE_TYPE);
     }
 
     /**
@@ -375,12 +401,12 @@ public class DishServiceImpl implements IDishService {
 
     /**
      * 清掉一个菜品的所有缓存（互斥锁路径 + 逻辑过期路径）。
-     * 为什么必须一起删：两条路写的是不同的 key、不同的格式，
+     * 为什么必须一起删：两条路写的是不同的 key，
      * 只删一条会让另一条继续返回旧菜名，直到它自己过期（最长 30 分钟）。
      */
     private void clearDishCache(Long id) {
-        redisCache.deleteObject(RedisKeys.DISH_DETAIL_PREFIX + id);    // 裸 Dish
-        redisCache.deleteObject(RedisKeys.DISH_LOGICAL_PREFIX + id);   // RedisData 包装
+        redisCache.deleteObject(RedisKeys.DISH_DETAIL_PREFIX + id);    // 互斥锁路径
+        redisCache.deleteObject(RedisKeys.DISH_LOGICAL_PREFIX + id);   // 逻辑过期路径
     }
 
     /**
