@@ -68,6 +68,14 @@ public class DishController extends BaseController
     {
         return success(dishService.selectDishById(id));
     }
+    /** 逻辑过期版详情接口：与 /{id} 返回同样的 Dish，区别只在缓存策略（拿一致性换并发） */
+    @PreAuthorize("@ss.hasPermi('merchant:dish:query')")
+    @GetMapping("/logical/{id:\\d+}")
+    public AjaxResult getInfoLogical(@PathVariable("id") Long id)
+    {
+        return success(dishService.selectDishByIdLogical(id));
+    }
+
 
     /**
      * 新增菜品管理

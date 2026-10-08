@@ -124,6 +124,16 @@ public class DishServiceImpl implements IDishService
     }
 
     /**
+     * 根据id查询菜品管理
+     * @param id
+     * @return
+     */
+    @Override
+    public Dish selectDishByIdLogical(Long id) {
+        return null;
+    }
+
+    /**
      * 持锁期间重建缓存：双检 → 查库 → 回填。
      * 查不到时写"空值标记"（只设 id、name 为空），后续请求命中它即可直接返回 null，不再打库。
      * 调用方必须已持有 lockKey 对应的锁，本方法只负责重建，不负责加锁 / 放锁。

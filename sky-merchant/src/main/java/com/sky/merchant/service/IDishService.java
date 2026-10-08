@@ -73,4 +73,11 @@ public interface IDishService
      * @param top 热门菜品数量
      */
     List<Map<String, Object>> getHotDishes(int top);
+
+    /**
+     * 查询菜品详情（逻辑过期版）。
+     * 与 selectDishById 的差异：key 永不物理消失，读到逻辑过期值时先返回旧值、
+     * 再让后台线程异步重建 —— 换取"任何请求都不需要等锁"。
+     */
+    Dish selectDishByIdLogical(Long id);
 }
