@@ -4,6 +4,7 @@ import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.io.Serial;
 import java.io.Serializable;
 import java.time.LocalDateTime;
 
@@ -37,6 +38,7 @@ import java.time.LocalDateTime;
 @AllArgsConstructor
 public class RedisData<T> implements Serializable
 {
+    @Serial
     private static final long serialVersionUID = 1L;
 
     /** 逻辑过期时间：到点后 key 依然存在，只是业务上认定它"过期了"，需要异步重建 */

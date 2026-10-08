@@ -40,6 +40,9 @@ public class RedisKeys
     /** 重建锁的过期时间（秒）：必须明显大于一次查库的耗时，否则锁会提前失效 */
     public static final int DISH_LOCK_TTL_SECONDS = 10;
 
+    /** 逻辑过期版详情缓存的重建锁的过期时间（秒）：必须明显大于一次查库的耗时，否则锁会提前失效 */
+    public static final int DISH_LOGICAL_LOCK_TTL_SECONDS = 10;
+
     /** 没抢到锁后最多等多久（毫秒）：必须 ≤ 锁 TTL×1000 */
     public static final long DISH_LOCK_WAIT_MILLIS = 2000L;
 

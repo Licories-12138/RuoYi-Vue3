@@ -68,7 +68,12 @@ public class DishController extends BaseController
     {
         return success(dishService.selectDishById(id));
     }
-    /** 逻辑过期版详情接口：与 /{id} 返回同样的 Dish，区别只在缓存策略（拿一致性换并发） */
+
+    /**
+     * 逻辑过期版详情接口。
+     * 与 getInfo 返回同一个 Dish，差别只在缓存策略：
+     * 读到逻辑过期值时先返回旧值、后台线程异步重建，换取"任何请求都不等锁"。
+     */
     @PreAuthorize("@ss.hasPermi('merchant:dish:query')")
     @GetMapping("/logical/{id:\\d+}")
     public AjaxResult getInfoLogical(@PathVariable("id") Long id)
