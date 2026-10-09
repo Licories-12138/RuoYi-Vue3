@@ -11,6 +11,8 @@ PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
         <result property="image"    column="image"    />
         <result property="description"    column="description"    />
         <result property="status"    column="status"    />
+        <result property="stock"    column="stock"    />
+        <result property="version"    column="version"    />
         <result property="createTime"    column="create_time"    />
         <result property="updateTime"    column="update_time"    />
     </resultMap>
@@ -27,7 +29,7 @@ PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
     </resultMap>
 
     <sql id="selectDishVo">
-        select id, name, price, image, description, status, create_time, update_time from tb_dish
+        select id, name, price, image, description, status, stock, version, create_time, update_time from tb_dish
     </sql>
 
     <select id="selectDishList" parameterType="Dish" resultMap="DishResult">
@@ -39,7 +41,7 @@ PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
     </select>
     
     <select id="selectDishById" parameterType="Long" resultMap="DishDishFlavorResult">
-        select id, name, price, image, description, status, create_time, update_time
+        select id, name, price, image, description, status, stock, version, create_time, update_time
         from tb_dish
         where id = #{id}
     </select>
@@ -58,6 +60,8 @@ PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
             <if test="image != null and image != ''">image,</if>
             <if test="description != null">description,</if>
             <if test="status != null">status,</if>
+            <if test="stock != null">stock,</if>
+            <if test="version != null">version,</if>
             <if test="createTime != null">create_time,</if>
             <if test="updateTime != null">update_time,</if>
          </trim>
@@ -67,6 +71,8 @@ PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
             <if test="image != null and image != ''">#{image},</if>
             <if test="description != null">#{description},</if>
             <if test="status != null">#{status},</if>
+            <if test="stock != null">#{stock},</if>
+            <if test="version != null">#{version},</if>
             <if test="createTime != null">#{createTime},</if>
             <if test="updateTime != null">#{updateTime},</if>
          </trim>
@@ -80,9 +86,61 @@ PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
             <if test="image != null and image != ''">image = #{image},</if>
             <if test="description != null">description = #{description},</if>
             <if test="status != null">status = #{status},</if>
+            <if test="stock != null">stock = #{stock},</if>
+            <if test="version != null">version = #{version},</if>
             <if test="createTime != null">create_time = #{createTime},</if>
             <if test="updateTime != null">update_time = #{updateTime},</if>
         </trim>
+        where id = #{id}
+    </update>
+
+    <!--
+        扣减库存（Day11）。要点：
+        1. stock = stock - #{count} 是在 SQL 里做减法，不是"先查出来再算好写回去" ——
+           后者是读-改-写三步，即使有分布式锁，只要有人绕过锁就会超卖。
+        2. where 里的 stock >= #{count} 是第二道防线：把"够不够"的判断交给数据库，
+           由行锁保证「判断 + 扣减」原子完成。
+        3. 返回影响行数：1 = 扣成功，0 = 库存不足（不是异常，是正常业务结果）。
+    -->
+    <update id="deductStock">
+        update tb_dish
+        set stock = stock - #{count}
+        where id = #{id}
+          and stock >= #{count}
+    </update>
+
+    <!--
+        乐观锁扣减（v3，备用对照）。
+        和 v2 的区别：v2 完全不读库存，直接让数据库算减法；
+        v3 是"先读出 stock/version，算好了再带着 version 写回去"——
+        写的时候校验 version 没被别人动过，动过就返回 0 行、业务侧重试。
+
+        ⚠️ 它是"读-改-写"三步，只是用 version 把并发窗口收窄到极致，
+           并没有消灭窗口。所以高冲突场景下重试率会很高 ——
+           这也是为什么 v2 更优：v2 一步到位，不需要重试。
+    -->
+    <update id="deductStockOptimistic">
+        update tb_dish
+        set stock = stock - #{count},
+            version = version + 1
+        where id = #{id}
+          and version = #{version}
+          and stock >= #{count}
+    </update>
+
+    <!-- 只查库存（v0 对照组用） -->
+    <select id="selectStockById" resultType="java.lang.Integer">
+        select stock from tb_dish where id = #{id}
+    </select>
+
+    <!--
+        直接覆盖库存（v0 对照组用，故意不带宽条件）。
+        这个语句本身就是"超卖演示道具"：它无条件写入，
+        读-判断-写三步之间任何交错都会让它覆盖掉别人的扣减结果。
+    -->
+    <update id="updateStockById">
+        update tb_dish
+        set stock = #{stock}
         where id = #{id}
     </update>
 

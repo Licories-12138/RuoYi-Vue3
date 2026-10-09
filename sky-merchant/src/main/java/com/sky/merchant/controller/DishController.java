@@ -117,6 +117,67 @@ public class DishController extends BaseController
 
 
     /**
+     * 【Day11】扣库存 —— 四版对照入口。
+     * <p>
+     * 刻意做成"同一条业务、四个 URL"，是为了双实例压测时能逐个对照，
+     * 而不是靠改代码来回切 —— 改代码切会让机器状态、JIT 状态都不可比。
+     * <pre>
+     *   POST /merchant/dish/80/deduct?n=1         → v0 裸写（必超卖）
+     *   POST /merchant/dish/80/deduct/lock?n=1    → v1 Redisson 分布式锁
+     *   POST /merchant/dish/80/deduct/atomic?n=1  → v2 SQL 原子更新（推荐）
+     *   POST /merchant/dish/80/deduct/version?n=1 → v3 乐观锁（备选）
+     * </pre>
+     * 注意这里用的是 {@code {id:\d+}} 而不是 {@code {id}}，
+     * 否则 /deduct 这些子路径会和 /{id} 抢匹配（正则约束见 getInfo 处的说明）。
+     */
+    @PostMapping("/{id:\\d+}/deduct")
+    public AjaxResult deduct(@PathVariable("id") Long id,
+                             @RequestParam(name = "n", defaultValue = "1") Integer n)
+    {
+        dishService.deductStock(id, n);
+        // ⚠️ 若依只有 success() / success(String msg) / success(Object data) 三个重载，
+        //    没有 success(msg, data)。要同时带消息和数据必须自己 put。
+        return success().put("msg", "扣减成功")
+                        .put("stock", dishService.selectDishById(id).getStock());
+    }
+
+    /** 【Day11 · v0】裸写扣库存，用于复现超卖。 */
+    @PostMapping("/{id:\\d+}/deduct/nolock")
+    public AjaxResult deductNoLock(@PathVariable("id") Long id,
+                                   @RequestParam(name = "n", defaultValue = "1") Integer n)
+    {
+        return success().put("mode", "v0 裸写")
+                        .put("stock", dishService.deductStockNoLock(id, n));
+    }
+
+    /** 【Day11 · v1】Redisson 分布式锁扣库存。 */
+    @PostMapping("/{id:\\d+}/deduct/lock")
+    public AjaxResult deductWithLock(@PathVariable("id") Long id,
+                                     @RequestParam(name = "n", defaultValue = "1") Integer n)
+    {
+        return success().put("mode", "v1 Redisson 锁")
+                        .put("stock", dishService.deductStockWithLock(id, n));
+    }
+
+    /** 【Day11 · v2】数据库原子更新扣库存（不依赖锁）。 */
+    @PostMapping("/{id:\\d+}/deduct/atomic")
+    public AjaxResult deductAtomic(@PathVariable("id") Long id,
+                                   @RequestParam(name = "n", defaultValue = "1") Integer n)
+    {
+        return success().put("mode", "v2 原子更新")
+                        .put("stock", dishService.deductStockAtomic(id, n));
+    }
+
+    /** 【Day11 · v3】乐观锁扣库存（备用对照）。 */
+    @PostMapping("/{id:\\d+}/deduct/version")
+    public AjaxResult deductOptimistic(@PathVariable("id") Long id,
+                                       @RequestParam(name = "n", defaultValue = "1") Integer n)
+    {
+        return success().put("mode", "v3 乐观锁")
+                        .put("stock", dishService.deductStockOptimistic(id, n));
+    }
+
+    /**
      * 获取热门菜品列表
      * @param top 热门菜品数量
      * @return 热门菜品列表

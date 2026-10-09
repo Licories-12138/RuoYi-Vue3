@@ -13,6 +13,7 @@ import com.sky.merchant.cache.DishBloomFilter;
 import com.sky.merchant.cache.RedisData;
 import com.sky.merchant.config.CacheRebuildConfig;
 import lombok.extern.slf4j.Slf4j;
+import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -71,6 +72,8 @@ public class DishServiceImpl implements IDishService {
     private ThreadPoolExecutor rebuildExecutor;
     @Autowired
     private RedissonClient redissonClient;
+
+    private static final int MAX_RETRY = 10;
     /**
      * 菜品缓存条目的类型令牌，两条路径共用。
      * 泛型必须显式写死：TypeReference 靠匿名子类的 getGenericSuperclass() 拿类型信息，
@@ -137,7 +140,7 @@ public class DishServiceImpl implements IDishService {
             RedisData<Dish> retry = readCacheEntry(key);
             if (retry != null) {
                 Dish cached = retry.getData();
-                log.info(cached == null ? "等锁期间命中空值标记：id = {}" : "等锁期间命中缓存：id = {}", id);
+                log.info("等锁期间命中缓存：id = {}, 空值标记 = {}", id, cached == null);
                 return cached;          // data 为 null 就是空值标记
             }
         }
@@ -456,5 +459,244 @@ public class DishServiceImpl implements IDishService {
             resultList.add(map);
         }
         return resultList;
+    }
+
+    // ================================================================================
+    // Day11 · 扣库存四版对照
+    // --------------------------------------------------------------------------------
+    // 四版跑完要回答的问题：
+    //   v0 裸写    —— 不加任何保护，真的会超卖吗？（现象：最终库存 < 0，或卖出去的份数 > 初始库存）
+    //   v1 Redisson—— 加锁能治；但锁释放 & 事务提交的顺序是个坑（见 deductStockWithLock 注释）
+    //   v2 原子更新—— 不加锁也能治，而且代码最短
+    //   v3 乐观锁  —— 也能治，但高冲突下重试率上升，作为"另一种正确姿势"对照
+    //
+    // 结论 ：能用一条带条件的 UPDATE 解决，就不要上分布式锁。
+    // 锁的适用场景是"多步写、跨资源"，不是"单表单行减法"。
+    // ================================================================================
+
+    /**
+     * 统一入口（走 v2 原子更新）。
+     * <p>
+     * 为什么不把四个都暴露成默认？因为真实业务里只能有一个正确答案，
+     * 多路径并存是演示需要，不是设计需要。
+     */
+    @Override
+    public void deductStock(Long dishId, Integer count) {
+        // TODO 用户实现：调 deductStockAtomic(dishId, count) 即可
+        throw new UnsupportedOperationException("TODO: deductStock");
+    }
+
+    /**
+     * 【v0 · 裸写】故意不加保护的扣库存 —— 用来复现超卖。
+     * <p>
+     * 实现要点（三步，不要合并）：
+     * <ol>
+     *   <li>先校验参数：dishId / count 非空，count &gt; 0（count = -5 会变成"加库存"）</li>
+     *   <li>读：{@code dishMapper.selectStockById(dishId)}</li>
+     *   <li>判断并写：{@code if (current >= count) dishMapper.updateStockById(dishId, current - count)}</li>
+     * </ol>
+     * 这三步之间没有任何互斥 —— 两个线程同时读到 100，各自算成 99 写回，
+     * 结果卖了 2 份、库存只掉了 1。这就是超卖。
+     * <p>
+     * ⚠️ 压测时一定要先把库存调到一个较小的值（如 50），否则跑不满差异。
+     *
+     * @return 写入后的库存值（注意：这个返回值本身就不可信）
+     */
+    @Override
+    public Integer deductStockNoLock(Long dishId, Integer count) {
+        // 1. 参数校验
+        if (dishId == null || count == null || count <= 0) {
+            throw new ServiceException("扣减数量必须大于 0");
+        }
+        Integer current = dishMapper.selectStockById(dishId);
+        if (current == null) throw new ServiceException("菜品不存在");
+        if (current < count) throw new ServiceException("库存不足");
+        return dishMapper.updateStockById(dishId, current - count);
+    }
+
+    /**
+     * 【v1 · Redisson 分布式锁】
+     * <p>
+     * 加锁用哪种 API，直接决定看门狗开不开（这是本日最核心的知识点）：
+     * <pre>
+     *   lock.lock()                              ✅ 看门狗生效，TTL 30s，每 10s 续
+     *   lock.lock(10, TimeUnit.SECONDS)          ❌ 显式传 leaseTime = 关闭看门狗
+     *   lock.tryLock(3, 10, TimeUnit.SECONDS)    ❌ 显式传 leaseTime = 关闭看门狗
+     *   lock.tryLock(3, TimeUnit.SECONDS)        ✅ 只传等待时间，看门狗生效
+     * </pre>
+     * 扣库存是"业务级、时长不可预测"的操作 —— 万一和外部支付网关交互卡住 40 秒，
+     * 传了 leaseTime=10s 的锁早就自动过期了，第二个线程直接进来，锁形同虚设。
+     * 所以这里要用 {@code tryLock(等待时间)} 并让看门狗续期。
+     * <p>
+     * 🔴 finally 里解锁必须判空 + 判断持锁：
+     * <pre>
+     *   boolean locked = false;
+     *   RLock lock = redissonClient.getLock(RedisKeys.DISH_STOCK_LOCK_PREFIX + dishId);
+     *   try {
+     *       locked = lock.tryLock(3, TimeUnit.SECONDS);
+     *       if (!locked) { throw ... }   // 拿不到锁 = 直接拒绝，不是等待
+     *       ...业务...
+     *   } finally {
+     *       if (locked &amp;&amp; lock.isHeldByCurrentThread()) { lock.unlock(); }
+     *   }
+     * </pre>
+     * 不判 {@code isHeldByCurrentThread()} 会抛 {@code IllegalMonitorStateException}：
+     * tryLock 超时返回 false 时你根本没持锁，unlock 一个不属于自己的锁必然报错。
+     * <p>
+     * 🔴 事务顺序坑（双实例才暴露）：
+     * 如果这个方法上加了 {@code @Transactional}，锁在方法体结束就释放了，
+     * 但事务是在方法返回后才提交 —— 第二线程拿到锁进去查库，读到的还是旧库存，
+     * 照样超卖。<b>结论：锁必须包在事务外面</b>（分层：外层加锁，内层事务方法）。
+     * <p>
+     * 内层还是用"读-判断-写"三步（和 v0 一样），因为 v1 要证明的是
+     * "锁能把 v0 的问题治住"，而不是靠 SQL 兜底。
+     *
+     * @return 扣减后的库存
+     */
+    @Override
+    public Integer deductStockWithLock(Long dishId, Integer count) {
+        // 1. 参数校验
+        if (dishId == null || count == null || count <= 0) {
+            throw new ServiceException("扣减数量必须大于 0");
+        }
+        // 2. 取锁对象（key 用常量收口）
+        RLock lock = redissonClient.getLock(RedisKeys.DISH_STOCK_LOCK_PREFIX + dishId);
+
+        // locked 必须声明在 try 外面 —— finally 里要用它判断
+        boolean locked = false;
+        try {
+            // 3. 加锁：只传「等待时间」，不传 leaseTime
+            // 传了 leaseTime 就关闭看门狗，业务没跑完锁就自动过期，等于没锁
+            locked = lock.tryLock(3, TimeUnit.SECONDS);
+            if (!locked) {
+                // // 扣库存是「长临界区」—— 拿不到锁就直接拒绝，不能无限等
+                throw new ServiceException("扣减库存失败");
+            }
+            // 4. 扣库存
+            Integer current = dishMapper.selectStockById(dishId);
+            if (current == null) throw new ServiceException("菜品不存在");
+            if (current < count) throw new ServiceException("库存不足");
+            dishMapper.updateStockById(dishId, current - count);
+            return current - count;
+        } catch (InterruptedException e) {
+            // tryLock(带超时) 会抛这个
+            Thread.currentThread().interrupt();   // 恢复中断标志，别吞掉
+            throw new ServiceException("获取锁被中断");
+        } finally {
+            // 5. 解锁：必须满足「拿到了锁」+「锁是我的」两个条件
+            // 少了 isHeldByCurrentThread()，tryLock 超时时会抛 IllegalMonitorStateException
+            if (locked && lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
+        }
+    }
+
+    /**
+     * 【v2 · 数据库原子更新】推荐方案。
+     * <p>
+     * 一句话：把"够不够"和"扣多少"塞进同一条 SQL 的 WHERE 里，
+     * 由 InnoDB 的行锁保证原子性 —— 这才是最朴素也最可靠的解法。
+     * <pre>
+     *   update tb_dish set stock = stock - #{count}
+     *   where id = #{id} and stock >= #{count}
+     * </pre>
+     * 实现要点：
+     * <ol>
+     *   <li>参数校验（同上，重点防 count 为负）</li>
+     *   <li>{@code int rows = dishMapper.deductStock(dishId, count);}</li>
+     *   <li>{@code rows == 0} → 库存不足，抛 ServiceException（这是正常业务失败，不是异常）</li>
+     *   <li>返回 {@code dishMapper.selectStockById(dishId)} 作为最终库存</li>
+     * </ol>
+     * ⚠️ 注意：这里读回来的库存是"另一个时刻"的值，只用于展示，不要拿它做判断。
+     * <p>
+     * ⚠️ 但 v2 不是万能的：它只能保证<b>单条 UPDATE</b> 的原子性。
+     * 如果业务是"扣库存 + 写订单 + 写流水"三步，仍然需要锁或事务 +
+     * 事务内的行锁顺序一致来避免死锁。
+     * <p>
+     * ⚠️ 缓存一致性：扣完库存要清 detail 缓存，否则查详情看到的还是旧库存。
+     * 调 {@link #clearDishCache(Long)}。
+     *
+     * @return 扣减后的库存
+     */
+    @Override
+    public Integer deductStockAtomic(Long dishId, Integer count) {
+        // 1. 参数校验
+        if (dishId == null || count == null || count <= 0) {
+            throw new ServiceException("扣减数量必须大于 0");
+        }
+        // 2. 扣库存
+        int rows = dishMapper.deductStock(dishId,count);
+        // 3. 判断结果
+        if (rows == 0) {
+            throw new ServiceException("库存不足");
+        }
+        // 4. 清空缓存
+        clearDishCache(dishId);
+        // 5. 返回最终库存
+        return dishMapper.selectStockById(dishId);
+    }
+
+    /**
+     * 【v3 · 乐观锁】备用对照。
+     * <p>
+     * 实现要点（必须带重试循环）：
+     * <pre>
+     *   for (int i = 0; i &lt; MAX_RETRY; i++) {
+     *       Dish dish = dishMapper.selectDishById(dishId);     // 读 stock + version
+     *       if (dish.getStock() &lt; count) { throw ... }
+     *       int rows = dishMapper.deductStockOptimistic(
+     *               dishId, dish.getStock() - count, dish.getVersion());
+     *       if (rows == 1) { return dish.getStock() - count; } // 成功
+     *       // rows == 0 → 有人抢先改了，重读重试
+     *   }
+     *   throw new ServiceException("并发冲突，请重试");
+     * </pre>
+     * 对比结论：
+     * <ul>
+     *   <li>v2 一步到位、零重试；v3 是"读-改-写"，重试是常态</li>
+     *   <li>高并发下 v3 的重试会放大数据库压力，v2 不会</li>
+     *   <li>v3 的价值在"读多写少 + 冲突极低"场景，比如配置项更新</li>
+     * </ul>
+     * 注意 {@code getStock()} 是 Integer 包装类型，可能为 null（菜品不存在），
+     * 直接参与 {@code <} 比较会 NPE —— 先判 null。
+     *
+     * @return 扣减后的库存
+     */
+    @Override
+    public Integer deductStockOptimistic(Long dishId, Integer count) {
+        // 1. 参数校验
+        if (dishId == null || count == null || count <= 0) {
+            throw new ServiceException("扣减数量必须大于 0");
+        }
+        // 2. 重试循环,最多 MAX_RETRY 次
+        for (int i = 0; i < MAX_RETRY; i++) {
+            // 重试前退避：让先成功的请求先落库，避免所有线程在同一时刻反复碰撞
+            if (i > 0) {
+                try {
+                    Thread.sleep(10L * i);   // 10ms, 20ms 递增
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new ServiceException("系统繁忙，请稍后再试");
+                }
+            }
+            // 2.1 每轮都要重新查最新值 —— 不能把上一轮的值带进来
+            Dish dish = dishMapper.selectDishById(dishId);
+            // 2.2 提前退出：菜品不存在 / 库存不足 —— 这两种重试也没用，直接抛异常
+            if (dish == null) throw new ServiceException("菜品不存在");
+            if (dish.getStock() == null || dish.getStock() < count) {
+                throw new ServiceException("库存不足");
+            }
+            // 2.3 CAS 尝试：带 version 条件的 UPDATE
+            int rows = dishMapper.deductStockOptimistic(dishId, count, dish.getVersion());
+            // 2.4 判断结果
+            if (rows == 1) {
+                clearDishCache(dishId);
+                return dish.getStock() - count;
+            } else if (rows == 0) {
+                //noinspection UnnecessaryContinue
+                continue; // 重试
+            }
+        }
+        throw new ServiceException("系统繁忙，请稍后再试");
     }
 }

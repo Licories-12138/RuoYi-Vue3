@@ -41,6 +41,24 @@ public class Dish extends BaseEntity
     @Excel(name = "售卖状态")
     private Long status;
 
+    /** 库存数量（Day11 Redisson 分布式锁演示用） */
+    @Excel(name = "库存")
+    private Integer stock;
+
+    /**
+     * 乐观锁版本号（Day11 对照用）。
+     * <p>
+     * 用途不是"锁"，而是给"读-改-写"加一个校验位：
+     * <pre>update tb_dish set stock = #{stock}, version = version + 1
+     *  where id = #{id} and version = #{version}</pre>
+     * 影响行数为 0 说明期间有人改过，本次作废重试。
+     * <p>
+     * 注意它和 v1（Redisson 互斥锁）、v2（SQL 原子更新）是三套不同的思路，
+     * 不是同一件事的三种写法 —— 详见笔记。
+     */
+    @Excel(name = "版本号")
+    private Integer version;
+
     /** 菜品口味关系信息 */
     private List<DishFlavor> dishFlavorList;
 
@@ -104,6 +122,26 @@ public class Dish extends BaseEntity
         return status;
     }
 
+    public void setStock(Integer stock)
+    {
+        this.stock = stock;
+    }
+
+    public Integer getStock()
+    {
+        return stock;
+    }
+
+    public void setVersion(Integer version)
+    {
+        this.version = version;
+    }
+
+    public Integer getVersion()
+    {
+        return version;
+    }
+
     public List<DishFlavor> getDishFlavorList()
     {
         return dishFlavorList;
@@ -123,6 +161,8 @@ public class Dish extends BaseEntity
             .append("image", getImage())
             .append("description", getDescription())
             .append("status", getStatus())
+            .append("stock", getStock())
+            .append("version", getVersion())
             .append("createTime", getCreateTime())
             .append("updateTime", getUpdateTime())
             .append("dishFlavorList", getDishFlavorList())

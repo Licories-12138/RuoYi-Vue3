@@ -86,8 +86,11 @@ spring:
       port: 6379
       # 数据库索引
       database: 0
-      # 密码
-      password:
+      # ⚠️ 本机 Redis 未设密码，这里【不能】留一个空的 `password:` ——
+      # Redisson 4.8.0 会把空值当成空字符串密码，发出 AUTH ""，
+      # 服务端回 "ERR AUTH called without any password configured" 导致连接失败。
+      # 需要密码时再取消注释。
+      # password:
       # 连接超时时间
       timeout: 10s
       lettuce:

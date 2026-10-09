@@ -79,6 +79,16 @@ public class RedisKeys
      */
     public static final int DISH_PHYSICAL_TTL_SECONDS = 24 * 60 * 60;
 
+    /**
+     * 扣库存的 Redisson 分布式锁 key 前缀，后面拼菜品 id。
+     * 例：merchant:dish:stock:lock:80
+     * <p>
+     * 为什么不复用 DISH_LOCK_PREFIX：两把锁保护的临界区不同、粒度也不同 ——
+     * DISH_LOCK_PREFIX 保护"重建缓存"（毫秒级，10 秒 TTL 够），
+     * 这把保护"扣库存"（业务级，需要看门狗续期）。混用会互相干扰。
+     */
+    public static final String DISH_STOCK_LOCK_PREFIX = "merchant:dish:stock:lock:";
+
     private RedisKeys()
     {
     }
