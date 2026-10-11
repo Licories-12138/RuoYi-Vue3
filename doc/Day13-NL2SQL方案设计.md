@@ -31,15 +31,23 @@ name          varchar(32)   菜品名称（UNIQUE）
 price         decimal(10,2) 菜品价格
 image         varchar(255)  图片
 description   varchar(255)  描述信息
-status        int           0 停售 1 起售     ← ⚠️ 与 Day11 笔记的注释不一致
+status        int           0 停售 1 在售     ← 以字典 dish_status 为准
 create_time   datetime      创建时间
 update_time   datetime      更新时间
 stock         int           库存数量
 version       int           乐观锁版本号
 ```
 
-🔴 **`status` 字段注释是「0 停售 1 起售」**，但 `DishTools.java` 第 57 行注释写的是「0 正常 / 1 停售」，
-`formatDish()` 里也是 `"1".equals(...) ? "停售" : "在售"`。**两处说法相反** —— 这是要在 Day14 缓冲区核实的第一个点。
+🟢 **`status` 语义已结案，但结论与最初的猜测相反**：字典 `dish_status`（0 停售 / 1 启用）、
+DB 列注释（0 停售 1 起售）、苍穹外卖官方约定（1 起售）**三方一致 → 1 = 在售**。
+
+真正错的是**代码**：`DishServiceImpl.listOnSaleDishes()` 查的是 `status=0`，
+`DishTools.formatDish()` 也把 1 判成「停售」—— 已于 2026-10-11 修正为「查 1 / 显示在售」。
+（修正前 Agent 回答"现在有什么菜"返回的是「宽粉 / 宫保鸡丁 / 测试菜品-布隆」等 7 条停售的测试数据，
+而 25 个真实在售菜全被漏掉。）
+
+⚠️ **教训**：判断字段语义不能只看"菜名像不像业务菜"，要看 `create_time`、来源批次、字典三方交叉验证。
+当初就是因为把"用户后造的测试数据"误认成"真实业务菜"，才得出了相反的结论。
 
 ### 0.3 三个业务表的关系
 
@@ -91,7 +99,8 @@ tb_course                              （独立表，无关联）
 ④ 三层安全校验 ★核心★
    │  ④.1 语句类型：必须是 SELECT
    │  ④.2 表白名单：AST 里出现的表必须在白名单内
-   │  ④.3 危险模式：无 WHERE 的 UPDATE/DELETE、子查询、UNION、注释符
+   │  ④.3 危险模式：UNION、子查询、注释符
+   │  ④.4 列级：禁止列通配符 SELECT * / SELECT d.*（防内部字段外泄 + 控制返回体积）
    ▼
 ⑤ 执行（JdbcTemplate + 超时 + LIMIT 兜底）
    │  maxRows / queryTimeout / 强制追加 LIMIT 200
@@ -144,7 +153,7 @@ ORDER BY ORDINAL_POSITION;
   id            bigint         主键
   name          varchar(32)    菜品名称
   price         decimal(10,2)  菜品价格（元）
-  status        int            0 停售 1 起售
+  status        int            0 停售 1 在售
   stock         int            库存数量
   description   varchar(255)   描述信息
 
@@ -199,7 +208,7 @@ ORDER BY ORDINAL_POSITION;
 |---|---|
 | ① Prompt | system 里明确「只能查白名单表」，但**不把它当安全手段** |
 | ② 输出约束 | 要求模型只输出 SQL；解析前剥掉 ```sql 围栏 |
-| ③ **AST 校验** | 语句类型必须 `SELECT`；表集合 ⊆ 白名单；禁止 `UNION` / 子查询 / 注释符 |
+| ③ **AST 校验** | 语句类型必须 `SELECT`；表集合 ⊆ 白名单；禁止 `UNION` / 子查询 / 注释符 / **列通配符** |
 | ④ 执行 | `JdbcTemplate` 的 `setMaxRows(200)` + `setQueryTimeout(5)`；只读连接 |
 
 **面试话术**：「我不靠提示词保证安全 —— 提示词是**建议**，Parser 校验才是**强制**。模型被绕过了，SQL 也执行不了。」
@@ -276,12 +285,18 @@ Day5 已经做过 `@DataScope` 数据权限（AOP + SQL 拼接）。NL2SQL 的�
 
 ## 六、待办
 
-- [ ] **核实 `tb_dish.status` 语义矛盾**（库注释「0 停售 1 起售」 vs `DishTools` 注释「0 正常 1 停售」）—— 优先
+- [x] **`tb_dish.status` 语义已核实** ✅（2026-10-11）：**1 = 在售**（字典 / 列注释 / 苍穹外卖约定三方一致），
+      代码查 `status=0` 是 BUG，已修正为查 1（详见 0.2 节）
 - [x] **确认 SQL Parser 选型：Druid SQL Parser，零新增依赖** ✅（2026-10-11 核实）
       根 `pom.xml:22` 已有 `druid.version = 1.2.28`，`pom.xml:52` 是 `druid-spring-boot-4-starter`。
       用 `com.alibaba.druid.sql.SQLUtils.parseSingleStatement(sql, dbType)` → `SQLSelectStatement`，
       AST 上取 `getSelect().getQueryBlock().getFrom()` 拿表名、`.getWhere()` 判有无 WHERE。
       ⚠️ 校验用 `SQLUtils.parseSingleStatement`（单条），**不要用 `parseStatements`**（多条）——
       允许多语句就等于给「`select 1; drop table x`」开门。
-- [ ] Day14 缓冲区：把本方案落地成接口骨架（本期只出设计）
-- [ ] 排期 HTML 第 13 天补「已完成」段
+- [x] **方案已落地成代码** ✅（2026-10-11）：契约 5 个 + 校验器（14 单测全绿）+ 元数据 + 主流程 + Controller，六段链路端到端跑通
+- [x] **加了「禁止 `SELECT *`」的校验器层拦截** ✅（2026-10-11，第 ④.4 步）
+      两类 AST 节点都要判（已实测）：`select *` → `SQLAllColumnExpr`；`select d.*` → `SQLPropertyExpr`
+      （其 `getName()` 为 `*`），只判第一类会漏掉最常见的 `d.*`。
+      🔴 **不能用字符串 `contains("*")`** —— `select count(*)` 会被误杀，而它在 AST 里是
+      `SQLAggregateExpr`，天然分得开（已加一条反向断言守着这个坑）。
+      顺序：放在**表白名单之后** ——「越权」比「列全」严重。测试 14 → **15 条全绿**。

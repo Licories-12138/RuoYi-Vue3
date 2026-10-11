@@ -2,7 +2,10 @@ package com.sky.merchant.nl2sql.impl;
 
 import java.util.*;
 
+import com.alibaba.druid.sql.ast.SQLExpr;
 import com.alibaba.druid.sql.ast.SQLName;
+import com.alibaba.druid.sql.ast.expr.SQLAllColumnExpr;
+import com.alibaba.druid.sql.ast.expr.SQLPropertyExpr;
 import com.alibaba.druid.sql.ast.statement.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -34,6 +37,7 @@ import com.sky.merchant.nl2sql.ValidationResult.Reason;
  *   ├─ 步骤2  collectTableNames() → collectTables() 递归 → normalizeTableName() 归一化
  *   ├─ 步骤3b hasSubquery()       → 递归 from 树
  *   ├─ 步骤3c hasSqlComment()     → 注意吃的是【原始 SQL 字符串】不是 AST
+ *   ├─ 步骤3d hasSelectAll()      → 列级：挡 SELECT * 和 SELECT d.*
  *   └─ 步骤4  appendLimit() / appendDataScope()
  * ⚠️ 唯一的顺序陷阱
  * ------------------------------------------------------------------
@@ -95,6 +99,12 @@ public class SqlValidatorImpl implements SqlValidator
         // ---- 步骤 3b/3c：子查询 + 注释 ----
         if (hasSubquery(block.getFrom()) || hasSqlComment(sql)) {
             return ValidationResult.fail(Reason.FORBIDDEN_PATTERN, "涉及子查询或注释");
+        }
+        // ---- 步骤 3d：禁止列通配符（SELECT * / SELECT d.*）----
+        // 为什么放在表白名单之后：「越权」比「列全」严重 —— 一条 SQL 要是越权了，
+        // 就该报 TABLE_NOT_ALLOWED，报 SELECT * 反而把更严重的问题盖住了。
+        if (hasSelectAll(block)) {
+            return ValidationResult.fail(Reason.SELECT_STAR_NOT_ALLOWED, "不支持 SELECT *，请指定具体字段");
         }
         // ---- 步骤 4：重写 ----
         appendLimit(block);
@@ -222,6 +232,34 @@ public class SqlValidatorImpl implements SqlValidator
         return rawSql.contains("--") || rawSql.contains("/*") || rawSql.contains("#"); // 命中：就是它
     }
 
+    /**
+     * 判断 select 列表里有没有列通配符 —— SELECT * 或 SELECT d.*。
+     * 为什么要拦：SELECT * 会带出内部字段（version 乐观锁、stock 库存、image 地址），
+     * 而且返回体积不可控 —— LIMIT 只管行数管不住列数，表里一加大字段就爆。
+     *
+     * 两类 AST 节点，都要判（实测确认）：
+     *   select *      → SQLAllColumnExpr
+     *   select d.*    → SQLPropertyExpr，其 getName() 为 "*"
+     * 只判第一类会漏掉最常见的 "d.*" 写法。
+     *
+     * 不能用原始字符串 contains("*") 判断 ——
+     * select count(*) 会被误杀，而它在 AST 里是 SQLAggregateExpr，天然分得开。
+     */
+    private boolean hasSelectAll(SQLSelectQueryBlock block)
+    {
+        for (SQLSelectItem item : block.getSelectList())
+        {
+            SQLExpr expr = item.getExpr();
+            if (expr instanceof SQLAllColumnExpr) {
+                return true; // select *
+            }
+            if (expr instanceof SQLPropertyExpr p && "*".equals(p.getName())) {
+                return true; // select d.*
+            }
+        }
+        return false;
+    }
+
     // ==================================================================
     // 第 4 步：重写
     // ==================================================================
@@ -253,5 +291,6 @@ public class SqlValidatorImpl implements SqlValidator
     {
         // TODO 当前阶段：留空实现 + 上面的说明注释
         //      （接口里 getAllowedTables 的竖切白名单已经是本期的纵向越权防线）
+
     }
 }

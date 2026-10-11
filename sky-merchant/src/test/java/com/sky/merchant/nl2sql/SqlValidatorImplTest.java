@@ -159,6 +159,22 @@ class SqlValidatorImplTest
         assertRejectedAnyWay("select 1 + 1");
     }
 
+    @Test
+    @DisplayName("列通配符：SELECT * 和 SELECT d.* 都要拦，但绝不能误杀 count(*)")
+    void rejectSelectStar()
+    {
+        assertRejected(Reason.SELECT_STAR_NOT_ALLOWED, "select * from tb_dish");
+        assertRejected(Reason.SELECT_STAR_NOT_ALLOWED, "select tb_dish.* from tb_dish");
+        assertRejected(Reason.SELECT_STAR_NOT_ALLOWED, "select d.* from tb_dish d");
+        // 混合场景：只有一个通配符也要拦
+        assertRejected(Reason.SELECT_STAR_NOT_ALLOWED,
+                "select d.id, f.* from tb_dish d join tb_dish_flavor f on d.id = f.dish_id");
+        // 反向验证：count(*) 不是列通配符 —— 它解析出来是 SQLAggregateExpr。
+        // 如果哪天有人把判定改成字符串 contains("*")，这条会立刻红。
+        assertTrue(validator.validate("select count(*) from tb_dish", 1L).isPassed(),
+                "count(*) 被误杀了 —— 说明判定没走 AST");
+    }
+
     // ==================================================================
     // 二、通过组 —— 正常 SQL 必须放行
     // ==================================================================
@@ -178,18 +194,18 @@ class SqlValidatorImplTest
     void acceptVariousValidQueries()
     {
         assertTrue(validator.validate("select count(*) from tb_dish", 1L).isPassed());
-        assertTrue(validator.validate("select * from tb_dish where price > 30", 1L).isPassed());
-        assertTrue(validator.validate("select * from tb_course", 1L).isPassed());
-        assertTrue(validator.validate("select * from tb_dish limit 5", 1L).isPassed());
+        assertTrue(validator.validate("select id, name, price from tb_dish where price > 30", 1L).isPassed());
+        assertTrue(validator.validate("select id from tb_course", 1L).isPassed());
+        assertTrue(validator.validate("select id from tb_dish limit 5", 1L).isPassed());
     }
 
     @Test
     @DisplayName("白名单表带反引号 / 库名前缀也要通过 —— 归一化是双向的，不能只拦不放")
     void acceptWhitelistedTableWithPrefix()
     {
-        assertTrue(validator.validate("select * from `tb_dish`", 1L).isPassed());
-        assertTrue(validator.validate("select * from `ry-vue`.tb_dish", 1L).isPassed());
-        assertTrue(validator.validate("select * from TB_DISH", 1L).isPassed());
+        assertTrue(validator.validate("select id from `tb_dish`", 1L).isPassed());
+        assertTrue(validator.validate("select id from `ry-vue`.tb_dish", 1L).isPassed());
+        assertTrue(validator.validate("select id from TB_DISH", 1L).isPassed());
     }
 
     @Test

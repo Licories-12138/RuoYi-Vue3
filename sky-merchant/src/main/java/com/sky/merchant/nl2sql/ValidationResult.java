@@ -23,6 +23,12 @@ public class ValidationResult
         TABLE_NOT_ALLOWED,
         /** 出现了禁止的结构：UNION / 子查询 / 注释符 / 多语句 */
         FORBIDDEN_PATTERN,
+        /**
+         * 使用了列通配符（SELECT * 或 SELECT d.*）。
+         * 单独一类而不是并进 FORBIDDEN_PATTERN —— 因为它的处置方式不同：
+         * 前者是"有人在攻击你"，这条只是"模型偷懒"，提示用户补字段即可。
+         */
+        SELECT_STAR_NOT_ALLOWED,
         /** 笛卡尔积：JOIN 没有 ON 条件 */
         CARTESIAN_JOIN
     }
