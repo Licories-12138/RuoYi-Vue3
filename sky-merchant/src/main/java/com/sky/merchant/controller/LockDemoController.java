@@ -11,21 +11,21 @@ import org.springframework.web.bind.annotation.RestController;
 
 /**
  * 【Day12】手写 SET NX PX 锁的演示端点。
- * <p>
- * 目的：让"互斥 / 防误删 / 原子释放"这三件事<b>可以手动验证</b>，
+ *
+ * 目的：让"互斥 / 防误删 / 原子释放"这三件事可以手动验证，
  * 而不是靠读代码相信它成立。
- * <p>
+ *
  * token 刻意做成参数由调用方传，而不是服务端自己生成 ——
  * 这样才能手动模拟"两个不同的持有者"，去验证"别人的锁删不掉"。
- * <p>
+ *
  * 验收五步（都是 POST）：
- * <pre>
+ *
  *   1) /merchant/lockdemo/acquire?key=A&token=t1        → locked=true
  *   2) /merchant/lockdemo/acquire?key=A&token=t2        → locked=false   （互斥生效）
  *   3) /merchant/lockdemo/release?key=A&token=t2        → released=false （★ 防误删）
  *   4) /merchant/lockdemo/release?key=A&token=t1        → released=true
  *   5) /merchant/lockdemo/acquire?key=A&token=t2        → locked=true    （锁已正常释放）
- * </pre>
+ *
  * 追加观察：第 1 步用 {@code ttl=3000}，等 5 秒再执行第 4 步 ——
  * {@code released=false} 且 {@code holder=null}，这就是"锁到期自动释放"。
  *

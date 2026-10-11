@@ -13,14 +13,11 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * 缓存异步重建用的线程池（逻辑过期方案配套）。
- *
- * <p>为什么不能每次 <code>new Thread()</code>：线程创建没有上限，QPS 一高就把机器打爆 ——
+ * 为什么不能每次 new Thread()：线程创建没有上限，QPS 一高就把机器打爆 ——
  * 每个线程占约 1MB 栈空间，几万个请求就能把内存吃光。线程池把线程数量封顶并复用。
- *
- * <p>为什么队列必须是<b>有界</b>的：无界队列（比如不指定容量的 LinkedBlockingQueue）
+ * 为什么队列必须是有界的：无界队列（比如不指定容量的 LinkedBlockingQueue）
  * 在过载时不会拒绝任务，只会一直堆积，最后 OOM；有界队列才能在过载时明确地"拒绝"。
- *
- * <p><b>拒绝策略为什么不用 CallerRunsPolicy</b>：它会让提交任务的业务线程自己去执行重建，
+ * 拒绝策略为什么不用 CallerRunsPolicy：它会让提交任务的业务线程自己去执行重建，
  * 把"立刻返回旧值"拖成"等重建跑完"，正好抵消了逻辑过期的全部意义。
  * 这里选择「丢弃 + 打日志」：丢的只是一次重建机会，缓存保持旧值，下次请求还会再触发。
  * 宁可少重建一次，也不让任何一个请求被拖慢。
@@ -45,6 +42,7 @@ public class CacheRebuildConfig
         {
             private final AtomicInteger seq = new AtomicInteger(1);
 
+            @SuppressWarnings("NullableProblems")
             @Override
             public Thread newThread(Runnable r)
             {

@@ -47,6 +47,10 @@ __pycache__/
 *.xml.versionsBackup
 *.swp
 
+######################################################################
+# 代码知识图谱产物（dev-expert Skill 的 build_graph.py 生成，体积大且可重建）
+.ai-memory/
+
 !*/build/*.java
 !*/build/*.html
 !*/build/*.xml

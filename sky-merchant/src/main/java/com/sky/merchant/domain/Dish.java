@@ -47,12 +47,12 @@ public class Dish extends BaseEntity
 
     /**
      * 乐观锁版本号（Day11 对照用）。
-     * <p>
+     *
      * 用途不是"锁"，而是给"读-改-写"加一个校验位：
-     * <pre>update tb_dish set stock = #{stock}, version = version + 1
-     *  where id = #{id} and version = #{version}</pre>
+     * update tb_dish set stock = #{stock}, version = version + 1
+     *  where id = #{id} and version = #{version}
      * 影响行数为 0 说明期间有人改过，本次作废重试。
-     * <p>
+     *
      * 注意它和 v1（Redisson 互斥锁）、v2（SQL 原子更新）是三套不同的思路，
      * 不是同一件事的三种写法 —— 详见笔记。
      */

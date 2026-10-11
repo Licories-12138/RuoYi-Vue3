@@ -118,15 +118,15 @@ public class DishController extends BaseController
 
     /**
      * 【Day11】扣库存 —— 四版对照入口。
-     * <p>
+     *
      * 刻意做成"同一条业务、四个 URL"，是为了双实例压测时能逐个对照，
      * 而不是靠改代码来回切 —— 改代码切会让机器状态、JIT 状态都不可比。
-     * <pre>
+     *
      *   POST /merchant/dish/80/deduct?n=1         → v0 裸写（必超卖）
      *   POST /merchant/dish/80/deduct/lock?n=1    → v1 Redisson 分布式锁
      *   POST /merchant/dish/80/deduct/atomic?n=1  → v2 SQL 原子更新（推荐）
      *   POST /merchant/dish/80/deduct/version?n=1 → v3 乐观锁（备选）
-     * </pre>
+     *
      * 注意这里用的是 {@code {id:\d+}} 而不是 {@code {id}}，
      * 否则 /deduct 这些子路径会和 /{id} 抢匹配（正则约束见 getInfo 处的说明）。
      */

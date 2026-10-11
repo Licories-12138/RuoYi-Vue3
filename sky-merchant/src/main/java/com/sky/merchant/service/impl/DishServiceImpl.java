@@ -39,16 +39,11 @@ import org.slf4j.LoggerFactory;
 /**
  * 菜品管理Service业务层处理
  *
- * <h3>缓存读写姿势：本类里同时存在三套，加新 key 前先看清用哪套</h3>
- * <table border="1">
- *   <tr><th>注入的模板</th><th>序列化器</th><th>适用 key</th></tr>
- *   <tr><td>{@code redisCache}（若依封装）</td><td>FastJson2</td>
- *       <td>{@code DISH_ONSALE_KEY}（在售列表）</td></tr>
- *   <tr><td>{@code stringRedisTemplate}</td><td>纯字符串</td>
- *       <td>{@code DISH_DETAIL_PREFIX} / {@code DISH_LOGICAL_PREFIX}（详情两条路径）</td></tr>
- *   <tr><td>{@code redisTemplate<Object,Object>}</td><td>泛型对象</td>
- *       <td>{@code DISH_HOT_KEY}（ZSet 热榜）</td></tr>
- * </table>
+ * 缓存读写姿势：本类里同时存在三套，加新 key 前先看清用哪套
+ * 注入的模板 | 序列化器 | 适用 key
+ *   {@code redisCache}（若依封装） | FastJson2 | {@code DISH_ONSALE_KEY}（在售列表）
+ *   {@code stringRedisTemplate} | 纯字符串 | {@code DISH_DETAIL_PREFIX} / {@code DISH_LOGICAL_PREFIX}（详情两条路径）
+ *   {@code redisTemplate<Object,Object>} | 泛型对象 | {@code DISH_HOT_KEY}（ZSet 热榜）
  *
  * ⚠️ 三套写出来的字节形态互不兼容（读的时候必须用同一个模板），
  * 所以 key 之间不能串用。详情两条路径统一走 StringRedisTemplate + RedisData 包装，
@@ -487,7 +482,7 @@ public class DishServiceImpl implements IDishService {
 
     /**
      * 统一入口（走 v2 原子更新）。
-     * <p>
+     *
      * 为什么不把四个都暴露成默认？因为真实业务里只能有一个正确答案，
      * 多路径并存是演示需要，不是设计需要。
      */
@@ -499,16 +494,16 @@ public class DishServiceImpl implements IDishService {
 
     /**
      * 【v0 · 裸写】故意不加保护的扣库存 —— 用来复现超卖。
-     * <p>
+     *
      * 实现要点（三步，不要合并）：
-     * <ol>
-     *   <li>先校验参数：dishId / count 非空，count &gt; 0（count = -5 会变成"加库存"）</li>
-     *   <li>读：{@code dishMapper.selectStockById(dishId)}</li>
-     *   <li>判断并写：{@code if (current >= count) dishMapper.updateStockById(dishId, current - count)}</li>
-     * </ol>
+     *
+     * - 先校验参数：dishId / count 非空，count > 0（count = -5 会变成"加库存"）
+     * - 读：{@code dishMapper.selectStockById(dishId)}
+     * - 判断并写：{@code if (current >= count) dishMapper.updateStockById(dishId, current - count)}
+     *
      * 这三步之间没有任何互斥 —— 两个线程同时读到 100，各自算成 99 写回，
      * 结果卖了 2 份、库存只掉了 1。这就是超卖。
-     * <p>
+     *
      * ⚠️ 压测时一定要先把库存调到一个较小的值（如 50），否则跑不满差异。
      *
      * @return 写入后的库存值（注意：这个返回值本身就不可信）
@@ -527,20 +522,20 @@ public class DishServiceImpl implements IDishService {
 
     /**
      * 【v1 · Redisson 分布式锁】
-     * <p>
+     *
      * 加锁用哪种 API，直接决定看门狗开不开（这是本日最核心的知识点）：
-     * <pre>
+     *
      *   lock.lock()                              ✅ 看门狗生效，TTL 30s，每 10s 续
      *   lock.lock(10, TimeUnit.SECONDS)          ❌ 显式传 leaseTime = 关闭看门狗
      *   lock.tryLock(3, 10, TimeUnit.SECONDS)    ❌ 显式传 leaseTime = 关闭看门狗
      *   lock.tryLock(3, TimeUnit.SECONDS)        ✅ 只传等待时间，看门狗生效
-     * </pre>
+     *
      * 扣库存是"业务级、时长不可预测"的操作 —— 万一和外部支付网关交互卡住 40 秒，
      * 传了 leaseTime=10s 的锁早就自动过期了，第二个线程直接进来，锁形同虚设。
      * 所以这里要用 {@code tryLock(等待时间)} 并让看门狗续期。
-     * <p>
+     *
      * 🔴 finally 里解锁必须判空 + 判断持锁：
-     * <pre>
+     *
      *   boolean locked = false;
      *   RLock lock = redissonClient.getLock(RedisKeys.DISH_STOCK_LOCK_PREFIX + dishId);
      *   try {
@@ -548,17 +543,17 @@ public class DishServiceImpl implements IDishService {
      *       if (!locked) { throw ... }   // 拿不到锁 = 直接拒绝，不是等待
      *       ...业务...
      *   } finally {
-     *       if (locked &amp;&amp; lock.isHeldByCurrentThread()) { lock.unlock(); }
+     *       if (locked && lock.isHeldByCurrentThread()) { lock.unlock(); }
      *   }
-     * </pre>
+     *
      * 不判 {@code isHeldByCurrentThread()} 会抛 {@code IllegalMonitorStateException}：
      * tryLock 超时返回 false 时你根本没持锁，unlock 一个不属于自己的锁必然报错。
-     * <p>
+     *
      * 🔴 事务顺序坑（双实例才暴露）：
      * 如果这个方法上加了 {@code @Transactional}，锁在方法体结束就释放了，
      * 但事务是在方法返回后才提交 —— 第二线程拿到锁进去查库，读到的还是旧库存，
-     * 照样超卖。<b>结论：锁必须包在事务外面</b>（分层：外层加锁，内层事务方法）。
-     * <p>
+     * 照样超卖。结论：锁必须包在事务外面（分层：外层加锁，内层事务方法）。
+     *
      * 内层还是用"读-判断-写"三步（和 v0 一样），因为 v1 要证明的是
      * "锁能把 v0 的问题治住"，而不是靠 SQL 兜底。
      *
@@ -604,26 +599,26 @@ public class DishServiceImpl implements IDishService {
 
     /**
      * 【v2 · 数据库原子更新】推荐方案。
-     * <p>
+     *
      * 一句话：把"够不够"和"扣多少"塞进同一条 SQL 的 WHERE 里，
      * 由 InnoDB 的行锁保证原子性 —— 这才是最朴素也最可靠的解法。
-     * <pre>
+     *
      *   update tb_dish set stock = stock - #{count}
      *   where id = #{id} and stock >= #{count}
-     * </pre>
+     *
      * 实现要点：
-     * <ol>
-     *   <li>参数校验（同上，重点防 count 为负）</li>
-     *   <li>{@code int rows = dishMapper.deductStock(dishId, count);}</li>
-     *   <li>{@code rows == 0} → 库存不足，抛 ServiceException（这是正常业务失败，不是异常）</li>
-     *   <li>返回 {@code dishMapper.selectStockById(dishId)} 作为最终库存</li>
-     * </ol>
+     *
+     * - 参数校验（同上，重点防 count 为负）
+     * - {@code int rows = dishMapper.deductStock(dishId, count);}
+     * - {@code rows == 0} → 库存不足，抛 ServiceException（这是正常业务失败，不是异常）
+     * - 返回 {@code dishMapper.selectStockById(dishId)} 作为最终库存
+     *
      * ⚠️ 注意：这里读回来的库存是"另一个时刻"的值，只用于展示，不要拿它做判断。
-     * <p>
-     * ⚠️ 但 v2 不是万能的：它只能保证<b>单条 UPDATE</b> 的原子性。
+     *
+     * ⚠️ 但 v2 不是万能的：它只能保证单条 UPDATE 的原子性。
      * 如果业务是"扣库存 + 写订单 + 写流水"三步，仍然需要锁或事务 +
      * 事务内的行锁顺序一致来避免死锁。
-     * <p>
+     *
      * ⚠️ 缓存一致性：扣完库存要清 detail 缓存，否则查详情看到的还是旧库存。
      * 调 {@link #clearDishCache(Long)}。
      *
@@ -649,25 +644,25 @@ public class DishServiceImpl implements IDishService {
 
     /**
      * 【v3 · 乐观锁】备用对照。
-     * <p>
+     *
      * 实现要点（必须带重试循环）：
-     * <pre>
-     *   for (int i = 0; i &lt; MAX_RETRY; i++) {
+     *
+     *   for (int i = 0; i < MAX_RETRY; i++) {
      *       Dish dish = dishMapper.selectDishById(dishId);     // 读 stock + version
-     *       if (dish.getStock() &lt; count) { throw ... }
+     *       if (dish.getStock() < count) { throw ... }
      *       int rows = dishMapper.deductStockOptimistic(
      *               dishId, dish.getStock() - count, dish.getVersion());
      *       if (rows == 1) { return dish.getStock() - count; } // 成功
      *       // rows == 0 → 有人抢先改了，重读重试
      *   }
      *   throw new ServiceException("并发冲突，请重试");
-     * </pre>
+     *
      * 对比结论：
-     * <ul>
-     *   <li>v2 一步到位、零重试；v3 是"读-改-写"，重试是常态</li>
-     *   <li>高并发下 v3 的重试会放大数据库压力，v2 不会</li>
-     *   <li>v3 的价值在"读多写少 + 冲突极低"场景，比如配置项更新</li>
-     * </ul>
+     *
+     * - v2 一步到位、零重试；v3 是"读-改-写"，重试是常态
+     * - 高并发下 v3 的重试会放大数据库压力，v2 不会
+     * - v3 的价值在"读多写少 + 冲突极低"场景，比如配置项更新
+     *
      * 注意 {@code getStock()} 是 Integer 包装类型，可能为 null（菜品不存在），
      * 直接参与 {@code <} 比较会 NPE —— 先判 null。
      *

@@ -57,7 +57,7 @@ public class RedisKeys
 
     /**
      * 逻辑过期版详情缓存前缀。例：merchant:dish:detail:logical:80
-     * 刻意拼在 DISH_DETAIL_PREFIX <b>之内</b> —— clearCache 按 DISH_DETAIL_PREFIX + "*" 扫描，
+     * 刻意拼在 DISH_DETAIL_PREFIX 之内 —— clearCache 按 DISH_DETAIL_PREFIX + "*" 扫描，
      * 这样它天然会被清掉；若另起一个 merchant:dish:logical: 前缀，这个 key 就永远清不掉了。
      */
     public static final String DISH_LOGICAL_PREFIX = DISH_DETAIL_PREFIX + "logical:";
@@ -82,7 +82,7 @@ public class RedisKeys
     /**
      * 扣库存的 Redisson 分布式锁 key 前缀，后面拼菜品 id。
      * 例：merchant:dish:stock:lock:80
-     * <p>
+     *
      * 为什么不复用 DISH_LOCK_PREFIX：两把锁保护的临界区不同、粒度也不同 ——
      * DISH_LOCK_PREFIX 保护"重建缓存"（毫秒级，10 秒 TTL 够），
      * 这把保护"扣库存"（业务级，需要看门狗续期）。混用会互相干扰。
@@ -92,11 +92,29 @@ public class RedisKeys
     /**
      * 【Day12】手写 SET NX PX 锁 demo 的 key 前缀，后面拼业务标识。
      * 例：merchant:lock:demo:A
-     * <p>
+     *
      * 单独起前缀而不是复用 DISH_LOCK_PREFIX：这是演示用的锁，
      * 和生产路径的缓存重建锁混在一起会干扰排查。
      */
     public static final String LOCK_DEMO_PREFIX = "merchant:lock:demo:";
+
+    /**
+     * 【Day13】NL2SQL 元数据（白名单表的 schema 文本）的缓存 key。
+     *
+     * 为什么不加表名：本期白名单只有 3 张表，合并成一段文本喂给模型反而更好 ——
+     * 分 key 存会让每次请求要读 3 次 Redis、还要在应用层拼装。
+     * 表数涨到几十张时必须改成按表分 key + 召回（见 Day13 文档「5.3 表多了怎么办」）。
+     */
+    public static final String NL2SQL_SCHEMA_KEY = "merchant:nl2sql:schema";
+
+    /** NL2SQL schema 文本的 TTL（秒）：30 分钟。DDL 变更后靠等它过期或手动删 */
+    public static final int NL2SQL_SCHEMA_TTL_SECONDS = 30 * 60;
+
+    /** NL2SQL 查询结果强制追加的 LIMIT（行）。防止模型生成无 LIMIT 的大结果集打爆内存 */
+    public static final int NL2SQL_MAX_ROWS = 200;
+
+    /** NL2SQL 单次查询的超时时间（秒）。超过直接中断，不让慢 SQL 拖住连接池 */
+    public static final int NL2SQL_QUERY_TIMEOUT_SECONDS = 5;
 
     private RedisKeys()
     {
