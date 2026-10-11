@@ -44,6 +44,28 @@ public interface SchemaMetadataProvider
     List<String> getAllowedTables();
 
     /**
+     * 某张表允许被查询的列（不带表名限定，全小写）。
+     *
+     * 为什么需要它（列白名单）：
+     * 「禁止 SELECT *」只挡住了"偷懒写法"，挡不住"点单" ——
+     * 模型可以一个个点名列出内部字段（实测两次分别挑了 stock 和 image）。
+     * 要管住"选择"，就必须给列也定一份名单。
+     *
+     * 为什么必须人工声明、不能从库里读：
+     * 数据库里没有「这一列能不能对外开放」这个信息 —— 列注释只写"库存数量"，
+     * 不会写"别给顾客看"。这和"没有物理外键"是同一类问题：
+     * 数据库只描述事实，不描述权限。
+     *
+     * ⚠️ 校验要覆盖 SELECT / WHERE / ORDER BY / JOIN ON 四处 ——
+     * 只查 SELECT 列表是不够的：where stock > 0 虽然不返回 stock 列，
+     * 但结果集本身就泄露了库存信息（返回 3 条 = 有 3 个菜有库存）。
+     *
+     * @param table 表名（小写、不带反引号和库名前缀）
+     * @return 该表允许的列名；返回 null 表示「未声明」，校验器会跳过该表
+     */
+    List<String> getAllowedColumns(String table);
+
+    /**
      * 表之间的关联关系（人工声明，库里没有物理外键）。
      * 为什么必须人工声明：Day13 实测 {@code KEY_COLUMN_USAGE} 里 {@code tb_} 表全为空 ——
      * MySQL 层面根本没记录这些关系，information_schema 推不出来。

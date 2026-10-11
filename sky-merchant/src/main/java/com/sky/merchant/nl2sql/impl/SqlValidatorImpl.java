@@ -5,8 +5,13 @@ import java.util.*;
 import com.alibaba.druid.sql.ast.SQLExpr;
 import com.alibaba.druid.sql.ast.SQLName;
 import com.alibaba.druid.sql.ast.expr.SQLAllColumnExpr;
+import com.alibaba.druid.sql.ast.expr.SQLExistsExpr;
+import com.alibaba.druid.sql.ast.expr.SQLIdentifierExpr;
+import com.alibaba.druid.sql.ast.expr.SQLInSubQueryExpr;
 import com.alibaba.druid.sql.ast.expr.SQLPropertyExpr;
+import com.alibaba.druid.sql.ast.expr.SQLQueryExpr;
 import com.alibaba.druid.sql.ast.statement.*;
+import com.alibaba.druid.sql.visitor.SQLASTVisitorAdapter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -38,6 +43,7 @@ import com.sky.merchant.nl2sql.ValidationResult.Reason;
  *   ├─ 步骤3b hasSubquery()       → 递归 from 树
  *   ├─ 步骤3c hasSqlComment()     → 注意吃的是【原始 SQL 字符串】不是 AST
  *   ├─ 步骤3d hasSelectAll()      → 列级：挡 SELECT * 和 SELECT d.*
+ *   ├─ 步骤3e findIllegalColumn() → 列级：挡白名单之外的列（含 WHERE / ORDER BY 里的）
  *   └─ 步骤4  appendLimit() / appendDataScope()
  * ⚠️ 唯一的顺序陷阱
  * ------------------------------------------------------------------
@@ -97,7 +103,9 @@ public class SqlValidatorImpl implements SqlValidator
             }
         }
         // ---- 步骤 3b/3c：子查询 + 注释 ----
-        if (hasSubquery(block.getFrom()) || hasSqlComment(sql)) {
+        // ⚠️ 传的是整条 stmt，不是 block.getFrom() —— WHERE 里的子查询同样能藏越权表，
+        //    详见 hasSubquery 的注释（2026-10-11 修的漏洞）
+        if (hasSubquery(stmt) || hasSqlComment(sql)) {
             return ValidationResult.fail(Reason.FORBIDDEN_PATTERN, "涉及子查询或注释");
         }
         // ---- 步骤 3d：禁止列通配符（SELECT * / SELECT d.*）----
@@ -105,6 +113,13 @@ public class SqlValidatorImpl implements SqlValidator
         // 就该报 TABLE_NOT_ALLOWED，报 SELECT * 反而把更严重的问题盖住了。
         if (hasSelectAll(block)) {
             return ValidationResult.fail(Reason.SELECT_STAR_NOT_ALLOWED, "不支持 SELECT *，请指定具体字段");
+        }
+        // ---- 步骤 3e：列白名单 ----
+        // 必须在子查询检查之后 —— 子查询里的表名/列名会混进收集结果，那时结论不可信。
+        // 也必须在 SELECT * 检查之后 —— 通配符是更明确的信号，先报它。
+        String illegalColumn = findIllegalColumn(stmt);
+        if (illegalColumn != null) {
+            return ValidationResult.fail(Reason.COLUMN_NOT_ALLOWED, "不允许查询该字段：" + illegalColumn);
         }
         // ---- 步骤 4：重写 ----
         appendLimit(block);
@@ -193,24 +208,57 @@ public class SqlValidatorImpl implements SqlValidator
     // ==================================================================
 
     /**
-     * 判断 from 树里有没有子查询。
-     * 为什么要拦：select * from (select ... from sys_user) t ——
-     * 外层表名是别名 t，看着人畜无害，真正的越权表藏在子查询里。
-     * 用白名单校验外层根本挡不住，所以必须单独拦子查询。
-     * ⚠️ 同样要递归 JOIN 的左右。
+     * 整条语句里有没有子查询。
+     * 表达式里藏子查询有四种写法，对应的 AST 节点各不相同（逐个实测过）：
+     *   from (select ...) t          → SQLSubqueryTableSource
+     *   where x in (select ...)      → SQLInSubQueryExpr
+     *   where x > (select ...)       → SQLQueryExpr
+     *   where exists (select ...)    → SQLExistsExpr
+     * 所以这里改成用 visitor 遍历整条语句，而不是手写递归只看 FROM 树。
      */
-    private boolean hasSubquery(SQLTableSource source)
+    private boolean hasSubquery(SQLStatement stmt)
     {
-        if (source == null) {
-            return false;   // 终止：空
+        SubqueryFinder finder = new SubqueryFinder();
+        stmt.accept(finder);
+        return finder.found;
+    }
+
+    /**
+     * 只负责「找到就打标记」。
+     * 找到后立刻 return false —— 阻止 visitor 继续深入这个子节点：
+     * 结论已经确定了，没必要再走它内部的几十个节点。
+     */
+    private static class SubqueryFinder extends SQLASTVisitorAdapter
+    {
+        private boolean found;
+
+        @Override
+        public boolean visit(SQLSubqueryTableSource x)
+        {
+            found = true;
+            return false;
         }
-        if (source instanceof SQLSubqueryTableSource) {
-            return true;  // 命中：就是它
+
+        @Override
+        public boolean visit(SQLInSubQueryExpr x)
+        {
+            found = true;
+            return false;
         }
-        if (source instanceof SQLJoinTableSource j) {
-            return hasSubquery(j.getLeft()) || hasSubquery(j.getRight()); // 递归：左右都要看
+
+        @Override
+        public boolean visit(SQLQueryExpr x)
+        {
+            found = true;
+            return false;
         }
-        return false;  // 其它类型：不是子查询
+
+        @Override
+        public boolean visit(SQLExistsExpr x)
+        {
+            found = true;
+            return false;
+        }
     }
 
     /**
@@ -236,12 +284,10 @@ public class SqlValidatorImpl implements SqlValidator
      * 判断 select 列表里有没有列通配符 —— SELECT * 或 SELECT d.*。
      * 为什么要拦：SELECT * 会带出内部字段（version 乐观锁、stock 库存、image 地址），
      * 而且返回体积不可控 —— LIMIT 只管行数管不住列数，表里一加大字段就爆。
-     *
      * 两类 AST 节点，都要判（实测确认）：
      *   select *      → SQLAllColumnExpr
      *   select d.*    → SQLPropertyExpr，其 getName() 为 "*"
      * 只判第一类会漏掉最常见的 "d.*" 写法。
-     *
      * 不能用原始字符串 contains("*") 判断 ——
      * select count(*) 会被误杀，而它在 AST 里是 SQLAggregateExpr，天然分得开。
      */
@@ -258,6 +304,87 @@ public class SqlValidatorImpl implements SqlValidator
             }
         }
         return false;
+    }
+
+    /**
+     * 找出第一个不在列白名单里的列，没有则返回 null。
+     * 为什么要遍历整条语句而不是只看 selectList：
+     * 列会藏在四个地方（SELECT / WHERE / ORDER BY / JOIN ON）。只看第一个的话，
+     * where stock > 0 这种写法能绕过 —— 它虽然不返回 stock 列，
+     * 但结果集本身就泄露了库存信息（返回 3 条 = 有 3 个菜库存大于 0）。
+     * 收集范围的关键：必须排除表名和别名 ——
+     * 它们在 AST 里也是 SQLIdentifierExpr，不过滤就会把 "d.name" 里的 d 当成列名，
+     * 合法的 JOIN 查询会被误拦。
+     * 过滤办法不是「先收集再减去」，而是直接不深入这两种节点：
+     *   visit(SQLExprTableSource) return false → 表名和别名都不会被访问
+     *   visit(SQLPropertyExpr)    return false → 只取 name（真正的列），跳过 owner（别名/表名）
+     * （已用真实 SQL 逐个实测：count(*) / 函数名 / 字符串字面量都不产生假列名。）
+     */
+    private String findIllegalColumn(SQLStatement stmt)
+    {
+        // 允许的列 = 所有白名单表的列白名单的并集。
+        // ⚠️ 已知局限：多表 JOIN 时不做「列 → 表」的精确归属，只做列名级比对。
+        //    当前三张表里没有「同名但一方受限」的列（name / id / price 都是同名同待遇），
+        //    所以并集是安全的。一旦出现同名受限列（例如给某表加个内部用的 name），
+        //    就要改成解析 owner（别名 → 表名）后精确比对 —— 那是这处要升级的方向。
+        Set<String> allowed = new LinkedHashSet<>();
+        for (String table : metadataProvider.getAllowedTables())
+        {
+            List<String> cols = metadataProvider.getAllowedColumns(table);
+            if (cols != null)
+            {
+                allowed.addAll(cols);
+            }
+        }
+
+        // 一张白名单表都没声明列白名单 → 本期不校验，直接放行（向后兼容）
+        if (allowed.isEmpty())
+        {
+            return null;
+        }
+
+        ColumnCollector collector = new ColumnCollector();
+        stmt.accept(collector);
+        for (String col : collector.columns)
+        {
+            if (!allowed.contains(col))
+            {
+                return col;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 收集 SQL 里出现的所有列名（已排除表名和别名），统一转小写。
+     * 三个 visit 都 return false —— 意思是「这个节点我不深入」，理由见 findIllegalColumn。
+     */
+    private static class ColumnCollector extends SQLASTVisitorAdapter
+    {
+        private final Set<String> columns = new LinkedHashSet<>();
+
+        /** 表名和别名不是列 —— 不深入，否则 select d.name 里的 d 会被误当成列名 */
+        @Override
+        public boolean visit(SQLExprTableSource x)
+        {
+            return false;
+        }
+
+        /** 裸列名，例如 select id 里的 id */
+        @Override
+        public boolean visit(SQLIdentifierExpr x)
+        {
+            columns.add(x.getName().toLowerCase(Locale.ROOT));
+            return false;
+        }
+
+        /** 带限定符的列，例如 d.name —— 只取 name，owner（别名/表名）跳过 */
+        @Override
+        public boolean visit(SQLPropertyExpr x)
+        {
+            columns.add(x.getName().toLowerCase(Locale.ROOT));
+            return false;
+        }
     }
 
     // ==================================================================

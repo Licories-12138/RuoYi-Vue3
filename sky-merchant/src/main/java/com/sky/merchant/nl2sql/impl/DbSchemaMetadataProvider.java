@@ -34,6 +34,24 @@ public class DbSchemaMetadataProvider implements SchemaMetadataProvider {
     private static final Map<String, String> COMMENT_OVERRIDES =
             Map.of("tb_dish.status", "0 停售 1 启用");
 
+    /**
+     * 列白名单：每张表允许被查询的列。
+     * ⚠️ 这是「权限声明」，不是「表结构描述」—— 所以只能写在这里，
+     * 不能从 information_schema 自动生成：库里只有"stock 是库存数量"这个事实，
+     * 没有"stock 不能给顾客看"这个策略。数据库只描述事实，不描述权限。
+     * 被排除的内部字段及理由：
+     *   tb_dish.image          OSS 存储地址，纯查询场景用不到，还暴露存储桶
+     *   tb_dish.stock          库存量 —— 属经营数据，能反推销量
+     *   tb_dish.version        乐观锁版本号，纯内部字段
+     *   create_time/update_time  审计字段，模型不需要
+     *   tb_course 同类字段同理
+     */
+    private static final Map<String, List<String>> ALLOWED_COLUMNS = Map.of(
+            "tb_dish", List.of("id", "name", "price", "description", "status"),
+            "tb_dish_flavor", List.of("id", "dish_id", "name", "value"),
+            "tb_course", List.of("id", "code", "subject", "name", "price",
+                    "applicable_person", "info"));
+
     /** 表级元数据。注意 ORDER BY 保证表顺序与建表一致 用 AS 别名固定 Map 的 key  */
     private static final String SQL_TABLES = """
             SELECT TABLE_NAME AS tblName, TABLE_COMMENT AS tblComment
@@ -65,6 +83,12 @@ public class DbSchemaMetadataProvider implements SchemaMetadataProvider {
     @Override
     public List<String> getAllowedTables() {
         return ALLOWED_TABLES;
+    }
+
+    @Override
+    public List<String> getAllowedColumns(String table) {
+        // 显式判 null：ALLOWED_COLUMNS 是 Map.of 造的不可变 Map，get(null) 会抛 NPE
+        return table == null ? null : ALLOWED_COLUMNS.get(table);
     }
 
     @Override

@@ -14,15 +14,12 @@ import com.sky.merchant.nl2sql.impl.SqlValidatorImpl;
 
 /**
  * SqlValidator 的单元测试 —— 全工程唯一的测试类。
- *
  * 为什么只有它有测试：它是整条 NL2SQL 链路里唯一能纯单测的部分 ——
  * 不依赖 Spring 容器、不连数据库、不调模型。给 SQL 字符串就能验证。
- *
  * 两组用例，缺一不可：
  *   拒绝组：恶意 SQL 必须挡住 —— 这是安全闸门的底线，一条都不能漏；
  *   通过组：正常 SQL 必须放行 —— 防止校验过严，把合法查询也拒了。
  * 只测拒绝会让校验越写越严，只测通过会让闸门形同虚设 —— 两边都得守。
- *
  * 前置条件：SqlValidatorImpl 的 collectTables / hasSubquery / hasSqlComment /
  * appendLimit 四个方法实现完之前，本测试会大面积报红（UnsupportedOperationException）。
  * 先写测试、看它从红变绿，是检验实现是否完整最快的方式。
@@ -45,6 +42,19 @@ class SqlValidatorImplTest
         public List<String> getAllowedTables()
         {
             return List.of("tb_dish", "tb_dish_flavor", "tb_course");
+        }
+
+        @Override
+        public List<String> getAllowedColumns(String table)
+        {
+            // 故意在 tb_dish 上不开放 stock / image / version —— 测试要靠这个差异来验证拦截
+            return switch (table)
+            {
+                case "tb_dish" -> List.of("id", "name", "price", "description", "status");
+                case "tb_dish_flavor" -> List.of("id", "dish_id", "name", "value");
+                case "tb_course" -> List.of("id", "code", "subject", "name", "price");
+                default -> null;
+            };
         }
 
         @Override
@@ -144,6 +154,17 @@ class SqlValidatorImplTest
     }
 
     @Test
+    @DisplayName("🔴 子查询藏在 WHERE 里（不在 FROM 里）—— 同一个防线必须覆盖")
+    void rejectSubqueryInWhere()
+    {
+        // hasSubquery 如果只检查 block.getFrom()，下面这些会全被放行 —— 那是越权漏洞
+        assertRejectedAnyWay("select id from tb_dish where id in (select id from sys_user)");
+        assertRejectedAnyWay("select name from tb_dish where price > (select avg(price) from sys_user)");
+        assertRejectedAnyWay("select name from tb_dish where exists (select 1 from sys_user)");
+        assertRejectedAnyWay("select name from tb_dish where id = (select min(id) from qrtz_triggers)");
+    }
+
+    @Test
     @DisplayName("注释：在原始字符串上查，AST 里查不到")
     void rejectComment()
     {
@@ -173,6 +194,39 @@ class SqlValidatorImplTest
         // 如果哪天有人把判定改成字符串 contains("*")，这条会立刻红。
         assertTrue(validator.validate("select count(*) from tb_dish", 1L).isPassed(),
                 "count(*) 被误杀了 —— 说明判定没走 AST");
+    }
+
+    @Test
+    @DisplayName("列白名单：偷懒用通配符拦、点名要内部字段也拦")
+    void rejectIllegalColumn()
+    {
+        // 偷懒型：通配符
+        assertRejected(Reason.SELECT_STAR_NOT_ALLOWED, "select * from tb_dish");
+
+        // 点单型：逐个点名内部字段
+        assertRejected(Reason.COLUMN_NOT_ALLOWED, "select id, name, stock from tb_dish");
+        assertRejected(Reason.COLUMN_NOT_ALLOWED, "select version from tb_dish");
+        assertRejected(Reason.COLUMN_NOT_ALLOWED, "select image from tb_dish");
+
+        // ⭐ 关键：列不在 SELECT 列表里，但结果集同样泄露了信息
+        assertRejected(Reason.COLUMN_NOT_ALLOWED, "select name from tb_dish where stock > 0");
+        assertRejected(Reason.COLUMN_NOT_ALLOWED, "select name from tb_dish order by stock desc");
+        assertRejected(Reason.COLUMN_NOT_ALLOWED,
+                "select d.name, f.name from tb_dish d join tb_dish_flavor f on d.id = f.dish_id"
+                        + " where d.stock = 0");
+    }
+
+    @Test
+    @DisplayName("列白名单：别名 / 表名 / count(*) 不能被误当成列名（否则合法查询会被误拦）")
+    void acceptAliasNotTreatedAsColumn()
+    {
+        assertTrue(validator.validate(
+                "select d.name, f.name from tb_dish d join tb_dish_flavor f on d.id = f.dish_id", 1L)
+                .isPassed(), "别名 d / f 被误当成列名了");
+        assertTrue(validator.validate("select tb_dish.name from tb_dish", 1L).isPassed(),
+                "表名前缀被误当成列名了");
+        assertTrue(validator.validate("select count(*) as cnt from tb_dish", 1L).isPassed(),
+                "聚合函数名 / 别名被误当成列名了");
     }
 
     // ==================================================================

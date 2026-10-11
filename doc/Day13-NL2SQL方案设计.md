@@ -101,6 +101,8 @@ tb_course                              （独立表，无关联）
    │  ④.2 表白名单：AST 里出现的表必须在白名单内
    │  ④.3 危险模式：UNION、子查询、注释符
    │  ④.4 列级：禁止列通配符 SELECT * / SELECT d.*（防内部字段外泄 + 控制返回体积）
+   │  ④.5 列级：列白名单 —— 只放行声明的列
+   │      （必须遍历 SELECT / WHERE / ORDER BY / JOIN ON 四处）
    ▼
 ⑤ 执行（JdbcTemplate + 超时 + LIMIT 兜底）
    │  maxRows / queryTimeout / 强制追加 LIMIT 200
@@ -208,7 +210,7 @@ ORDER BY ORDINAL_POSITION;
 |---|---|
 | ① Prompt | system 里明确「只能查白名单表」，但**不把它当安全手段** |
 | ② 输出约束 | 要求模型只输出 SQL；解析前剥掉 ```sql 围栏 |
-| ③ **AST 校验** | 语句类型必须 `SELECT`；表集合 ⊆ 白名单；禁止 `UNION` / 子查询 / 注释符 / **列通配符** |
+| ③ **AST 校验** | 语句类型必须 `SELECT`；表集合 ⊆ 白名单；列集合 ⊆ 列白名单；禁止 `UNION` / 子查询（**含 WHERE 里的**）/ 注释符 / 列通配符 |
 | ④ 执行 | `JdbcTemplate` 的 `setMaxRows(200)` + `setQueryTimeout(5)`；只读连接 |
 
 **面试话术**：「我不靠提示词保证安全 —— 提示词是**建议**，Parser 校验才是**强制**。模型被绕过了，SQL 也执行不了。」
@@ -287,6 +289,21 @@ Day5 已经做过 `@DataScope` 数据权限（AOP + SQL 拼接）。NL2SQL 的�
 
 - [x] **`tb_dish.status` 语义已核实** ✅（2026-10-11）：**1 = 在售**（字典 / 列注释 / 苍穹外卖约定三方一致），
       代码查 `status=0` 是 BUG，已修正为查 1（详见 0.2 节）
+- [x] **🔴 修掉一个 WHERE 子查询越权漏洞** ✅（2026-10-11）
+      原 `hasSubquery()` 只检查 `block.getFrom()`，而表名收集也只走 FROM ——
+      `select id from tb_dish where id in (select id from sys_user)` 会被**放行并执行**。
+      现已改成用 `SQLASTVisitorAdapter` 遍历整条语句，覆盖四类子查询节点：
+      `SQLSubqueryTableSource`（from）/ `SQLInSubQueryExpr`（in）/ `SQLQueryExpr`（标量）/ `SQLExistsExpr`（exists）。
+      回归用例 `rejectSubqueryInWhere`（改之前是红的）。
+- [x] **列白名单** ✅（2026-10-11，第 ④.5 步）
+      `getAllowedColumns(table)` 与表白名单并列，人工声明（库里没有「这列能不能对外开放」这个信息）。
+      **必须遍历 SELECT / WHERE / ORDER BY / JOIN ON 四处** —— 只查 SELECT 列表的话，
+      `where stock > 0` 能绕过（不返回 stock 列，但结果集本身就泄露了库存信息）。
+      🔴 实现关键：**必须排除表名和别名** —— 它们在 AST 里也是 `SQLIdentifierExpr`，
+      不过滤会把 `d.name` 里的 `d` 当成列名。办法是三个 visit 都 `return false`（不深入）。
+      ⚠️ 已知局限：多表 JOIN 时只做列名并集比对，不做「列 → 表」精确归属；
+      当前三表无同名受限列，安全。出现时要解析 owner（别名→表名）。
+      测试 15 → **18 条全绿**。
 - [x] **确认 SQL Parser 选型：Druid SQL Parser，零新增依赖** ✅（2026-10-11 核实）
       根 `pom.xml:22` 已有 `druid.version = 1.2.28`，`pom.xml:52` 是 `druid-spring-boot-4-starter`。
       用 `com.alibaba.druid.sql.SQLUtils.parseSingleStatement(sql, dbType)` → `SQLSelectStatement`，

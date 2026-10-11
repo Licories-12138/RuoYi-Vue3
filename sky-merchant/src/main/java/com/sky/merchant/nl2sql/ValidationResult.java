@@ -29,6 +29,14 @@ public class ValidationResult
          * 前者是"有人在攻击你"，这条只是"模型偷懒"，提示用户补字段即可。
          */
         SELECT_STAR_NOT_ALLOWED,
+        /**
+         * 引用了列白名单之外的列。
+         * 和 SELECT_STAR_NOT_ALLOWED 的分工：
+         *   那条拦「偷懒」—— 用通配符一次拿到全部列；
+         *   这条拦「点名」—— 逐个列出内部字段（如 stock / version / image）。
+         * 只做前者挡不住后者，两条是互补的。
+         */
+        COLUMN_NOT_ALLOWED,
         /** 笛卡尔积：JOIN 没有 ON 条件 */
         CARTESIAN_JOIN
     }
