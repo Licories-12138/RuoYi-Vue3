@@ -23,7 +23,6 @@ package com.sky.merchant.nl2sql;
  *   4) 重写：给查询补上 LIMIT（见 RedisKeys.NL2SQL_MAX_ROWS），
  *      并按 userId 补数据范围条件（越权防线，见 Day5 的 DataScope 思路）。
  *      ⚠️ 数据范围条件是框架补的，不是模型写的 —— 模型不知道「你是谁」。
- *
  * ⚠️ 接口体里不能有可执行语句 —— 上面这四步都是实现，写在 impl.SqlValidatorImpl 里。
  *    接口只声明「要做什么」，不写「怎么做」。
  *

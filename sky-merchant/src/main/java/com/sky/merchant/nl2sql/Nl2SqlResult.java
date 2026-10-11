@@ -87,4 +87,50 @@ public class Nl2SqlResult
     {
         this.error = error;
     }
+
+    // ==================================================================
+    // 静态工厂：让调用方一行构造，不用 new 完再调一串 setter
+    // （ValidationResult 也是这个风格，保持一致）
+    // ==================================================================
+
+    /** 失败：只有一句原因 */
+    public static Nl2SqlResult fail(String error)
+    {
+        Nl2SqlResult r = new Nl2SqlResult();
+        r.error = error;
+        return r;
+    }
+
+    /** 失败：前缀 + 详情，例如 "SQL 执行失败" + 异常消息 */
+    public static Nl2SqlResult fail(String prefix, String detail)
+    {
+        Nl2SqlResult r = new Nl2SqlResult();
+        r.error = (detail == null || detail.isBlank()) ? prefix : prefix + "：" + detail;
+        return r;
+    }
+
+    /**
+     * 失败：校验器给的分类 + 消息。
+     * 把 Reason 一并放进 error 字符串，是为了让前端和日志能区分
+     * 「用户问错了」（PARSE_ERROR）和「有人在探测表结构」（TABLE_NOT_ALLOWED）。
+     */
+    public static Nl2SqlResult fail(ValidationResult.Reason reason, String message)
+    {
+        Nl2SqlResult r = new Nl2SqlResult();
+        r.error = reason + "：" + message;
+        return r;
+    }
+
+    /** 成功：一次填齐（truncated 由调用方按 LIMIT 上限判断后传入） */
+    public static Nl2SqlResult success(String sql, List<String> columns,
+                                       List<List<String>> rows, int rowCount, boolean truncated)
+    {
+        Nl2SqlResult r = new Nl2SqlResult();
+        r.sql = sql;
+        r.columns = columns;
+        r.rows = rows;
+        r.rowCount = rowCount;
+        r.truncated = truncated;
+        return r;
+    }
 }
