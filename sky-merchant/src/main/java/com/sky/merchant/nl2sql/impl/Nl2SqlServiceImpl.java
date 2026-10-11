@@ -79,13 +79,14 @@ public class Nl2SqlServiceImpl implements INl2SqlService {
         //     真正的安全边界仍然是下面的 AST 校验。
         //     忽略大小写匹配前缀（regionMatches），兼容模型多写的分号或句号。
         if (sql.regionMatches(true, 0, "NO_QUERY", 0, 8)) {
-            return Nl2SqlResult.fail("这个问题超出了可查询范围");
+            return Nl2SqlResult.fail("这个问题超出了可查询范围").withSql(sql);
         }
 
         // 3. 校验（直接调已完成的那套）
         ValidationResult vr = sqlValidator.validate(sql, userId);
         if (!vr.isPassed()){
-            return Nl2SqlResult.fail(vr.getReason(), vr.getMessage());
+            // 带上模型写的 SQL —— 排查「为什么被拦」时全靠它
+            return Nl2SqlResult.fail(vr.getReason(), vr.getMessage()).withSql(sql);
         }
         // 4. 执行 —— 用 vr.getRewrittenSql()（校验器重写后的），不是模型原始 SQL
         String finalSql = vr.getRewrittenSql();
@@ -117,7 +118,7 @@ public class Nl2SqlServiceImpl implements INl2SqlService {
             });
         } catch (Exception e) {
             log.error("NL2SQL 执行失败，sql = {}", finalSql, e);
-            return Nl2SqlResult.fail("SQL 执行失败", e.getMessage());
+            return Nl2SqlResult.fail("SQL 执行失败", e.getMessage()).withSql(finalSql);
         }
     }
     /**

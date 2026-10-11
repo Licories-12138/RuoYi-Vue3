@@ -121,6 +121,18 @@ public class Nl2SqlResult
         return r;
     }
 
+    /**
+     * 补上「模型实际生成的 SQL」。
+     * 为什么失败时也要带：排查失败时第一眼要看的就是「它到底写了什么」——
+     * 是被拦在越权表，还是被拦在 SELECT *，全看这个字段。
+     * 用链式调用而不是给每个 fail 工厂加参数，免得把工厂都撑成三参。
+     */
+    public Nl2SqlResult withSql(String sql)
+    {
+        this.sql = sql;
+        return this;
+    }
+
     /** 成功：一次填齐（truncated 由调用方按 LIMIT 上限判断后传入） */
     public static Nl2SqlResult success(String sql, List<String> columns,
                                        List<List<String>> rows, int rowCount, boolean truncated)
