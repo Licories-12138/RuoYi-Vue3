@@ -299,14 +299,20 @@ public class DishServiceImpl implements IDishService {
     }
 
     /**
-     * 后台分页走 selectDishList（不缓存），Agent 走 listOnSaleDishes()（带缓存）
+     * 查询在售菜品列表。
+     * 后台分页走 selectDishList（不缓存），Agent 走 listOnSaleDishes()（带缓存）。
      *
-     * @return 菜品管理集合
+     * status 语义以字典 dish_status 为准：0 = 停售，1 = 在售（启用）。
+     * 所以「在售」= status 1。查 0 会把停售的菜当成在售返回
+     * （2026-10-11 修正：此前写的是 0，导致 Agent 报出的「在售菜品」里
+     *   混着「测试菜品-布隆」这种测试数据，而 25 个真实在售菜全被漏掉）。
+     *
+     * @return 在售菜品集合
      */
     @Override
     public List<Dish> listOnSaleDishes() {
         Dish dish = new Dish();
-        dish.setStatus(0L);
+        dish.setStatus(1L);
         // RedisCache 反序列化时传的 clazz 是 Object，集合里没有泛型信息可还原，取回来运行时是 JSONArray
         JSONArray cached = redisCache.getCacheObject(RedisKeys.DISH_ONSALE_KEY); // 目标类型写 JSONArray
         if (cached != null && !cached.isEmpty()) {

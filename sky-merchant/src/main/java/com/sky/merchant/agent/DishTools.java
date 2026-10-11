@@ -54,8 +54,8 @@ public class DishTools
 
     /**
      * 查在售菜品列表。
-     * tb_dish.status 的取值以字典 dish_status 为准：0 = 停售，1 = 启用。
-     * 所以「在售」= status 0（DishServiceImpl.listOnSaleDishes 也是 setStatus(0L)）。
+     * tb_dish.status 的取值以字典 dish_status 为准：0 = 停售，1 = 在售（启用）。
+     * 所以「在售」= status 1（DishServiceImpl.listOnSaleDishes 里也是 setStatus(1L)）。
      */
     @Tool(description = "查询当前在售的菜品列表，返回菜名和售价。例如用户问「现在有什么菜」或「在卖的菜有哪些」时调用")
     public String listOnSaleDishes()
@@ -80,10 +80,10 @@ public class DishTools
      */
     private String formatDish(Dish d)
     {
-        // 状态文案：字典 dish_status 定义「0 停售 / 1 启用」，所以字符串里的「停售」对应 status=1。
-        // 注意本方法只会被 listOnSaleDishes（查 status=0）和 searchDishByName（模糊查，可能带出任意状态）调用，
-        // 后者才会真的走到"停售"这一支。判断方向不要改。
-        String statusText = "1".equals(String.valueOf(d.getStatus())) ? "停售" : "在售";
+        // 状态文案按字典 dish_status：1 = 在售（启用），0 = 停售。
+        // listOnSaleDishes 只查 status=1，走不到"停售"分支；
+        // searchDishByName 是模糊查，可能带出任意状态的菜，那时才会显示"停售"。
+        String statusText = "1".equals(String.valueOf(d.getStatus())) ? "在售" : "停售";
         BigDecimal price = d.getPrice() == null ? BigDecimal.ZERO : d.getPrice();
         String desc = d.getDescription() == null ? "" : ("，简介：" + d.getDescription());
         return "「" + d.getName() + "」售价 " + price + " 元，状态" + statusText + desc;
