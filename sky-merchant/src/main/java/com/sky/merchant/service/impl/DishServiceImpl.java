@@ -12,7 +12,6 @@ import com.sky.common.utils.DateUtils;
 import com.sky.merchant.cache.DishBloomFilter;
 import com.sky.merchant.cache.RedisData;
 import com.sky.merchant.config.CacheRebuildConfig;
-import lombok.extern.slf4j.Slf4j;
 import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -32,6 +31,10 @@ import com.sky.merchant.mapper.DishMapper;
 import com.sky.merchant.constant.RedisKeys;
 import com.sky.merchant.domain.Dish;
 import com.sky.merchant.service.IDishService;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * 菜品管理Service业务层处理
@@ -55,7 +58,6 @@ import com.sky.merchant.service.IDishService;
  * @date 2026-10-04
  */
 @Service
-@Slf4j
 public class DishServiceImpl implements IDishService {
     @Autowired
     private DishBloomFilter dishBloomFilter;
@@ -74,6 +76,7 @@ public class DishServiceImpl implements IDishService {
     private RedissonClient redissonClient;
 
     private static final int MAX_RETRY = 10;
+    private static final Logger log = LoggerFactory.getLogger(DishServiceImpl.class);
     /**
      * 菜品缓存条目的类型令牌，两条路径共用。
      * 泛型必须显式写死：TypeReference 靠匿名子类的 getGenericSuperclass() 拿类型信息，
@@ -361,10 +364,14 @@ public class DishServiceImpl implements IDishService {
         dish.setUpdateTime(DateUtils.getNowDate());
         dishMapper.deleteDishFlavorByDishId(dish.getId());
         insertDishFlavor(dish);
-        // 先改库，再删缓存
+        // 先改库
         int rows = dishMapper.updateDish(dish);
-        redisCache.deleteObject(RedisKeys.DISH_ONSALE_KEY);
-        clearDishCache(dish.getId());
+        // 再删缓存
+        afterCommit(() -> {
+            log.info(">>> afterCommit 触发，删除缓存：id = {}", dish.getId());
+            redisCache.deleteObject(RedisKeys.DISH_ONSALE_KEY);
+            clearDishCache(dish.getId());
+        });
         return rows;
     }
 
@@ -379,10 +386,12 @@ public class DishServiceImpl implements IDishService {
     public int deleteDishByIds(Long[] ids) {
         int rows = dishMapper.deleteDishByIds(ids);
         dishMapper.deleteDishFlavorByDishIds(ids);
-        redisCache.deleteObject(RedisKeys.DISH_ONSALE_KEY);
-        for (Long id : ids) {
-            clearDishCache(id);
-        }
+        afterCommit(() -> {
+            redisCache.deleteObject(RedisKeys.DISH_ONSALE_KEY);
+            for (Long id : ids) {
+                clearDishCache(id);
+            }
+        });
         return rows;
     }
 
@@ -397,8 +406,10 @@ public class DishServiceImpl implements IDishService {
     public int deleteDishById(Long id) {
         dishMapper.deleteDishFlavorByDishId(id);
         int rows = dishMapper.deleteDishById(id);      // 先改库
-        redisCache.deleteObject(RedisKeys.DISH_ONSALE_KEY);      // 再删缓存
-        clearDishCache(id);
+        afterCommit(() -> {
+            redisCache.deleteObject(RedisKeys.DISH_ONSALE_KEY);
+            clearDishCache(id);
+        });
         return rows;
     }
 
@@ -698,5 +709,24 @@ public class DishServiceImpl implements IDishService {
             }
         }
         throw new ServiceException("系统繁忙，请稍后再试");
+    }
+    /**
+     * 把「删缓存」挂到事务提交之后执行；若当前没有事务，则立即执行。
+     */
+    private void afterCommit(Runnable action) {
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    try {
+                        action.run();
+                    } catch (Exception e) {
+                        log.error("事务提交后删除缓存失败，将由 TTL 兜底", e);
+                    }
+                }
+            });
+        } else {
+            action.run();
+        }
     }
 }
