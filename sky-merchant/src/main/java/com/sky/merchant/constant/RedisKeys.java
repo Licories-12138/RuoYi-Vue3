@@ -89,6 +89,15 @@ public class RedisKeys
      */
     public static final String DISH_STOCK_LOCK_PREFIX = "merchant:dish:stock:lock:";
 
+    /**
+     * 【Day12】手写 SET NX PX 锁 demo 的 key 前缀，后面拼业务标识。
+     * 例：merchant:lock:demo:A
+     * <p>
+     * 单独起前缀而不是复用 DISH_LOCK_PREFIX：这是演示用的锁，
+     * 和生产路径的缓存重建锁混在一起会干扰排查。
+     */
+    public static final String LOCK_DEMO_PREFIX = "merchant:lock:demo:";
+
     private RedisKeys()
     {
     }

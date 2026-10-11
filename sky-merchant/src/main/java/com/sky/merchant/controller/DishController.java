@@ -130,6 +130,7 @@ public class DishController extends BaseController
      * 注意这里用的是 {@code {id:\d+}} 而不是 {@code {id}}，
      * 否则 /deduct 这些子路径会和 /{id} 抢匹配（正则约束见 getInfo 处的说明）。
      */
+    @SuppressWarnings("ConstantConditions")
     @PostMapping("/{id:\\d+}/deduct")
     public AjaxResult deduct(@PathVariable("id") Long id,
                              @RequestParam(name = "n", defaultValue = "1") Integer n)
@@ -142,6 +143,7 @@ public class DishController extends BaseController
     }
 
     /** 【Day11 · v0】裸写扣库存，用于复现超卖。 */
+    @SuppressWarnings("ConstantConditions")
     @PostMapping("/{id:\\d+}/deduct/nolock")
     public AjaxResult deductNoLock(@PathVariable("id") Long id,
                                    @RequestParam(name = "n", defaultValue = "1") Integer n)
@@ -151,6 +153,7 @@ public class DishController extends BaseController
     }
 
     /** 【Day11 · v1】Redisson 分布式锁扣库存。 */
+    @SuppressWarnings("ConstantConditions")
     @PostMapping("/{id:\\d+}/deduct/lock")
     public AjaxResult deductWithLock(@PathVariable("id") Long id,
                                      @RequestParam(name = "n", defaultValue = "1") Integer n)
@@ -160,6 +163,7 @@ public class DishController extends BaseController
     }
 
     /** 【Day11 · v2】数据库原子更新扣库存（不依赖锁）。 */
+    @SuppressWarnings("ConstantConditions")
     @PostMapping("/{id:\\d+}/deduct/atomic")
     public AjaxResult deductAtomic(@PathVariable("id") Long id,
                                    @RequestParam(name = "n", defaultValue = "1") Integer n)
@@ -169,6 +173,7 @@ public class DishController extends BaseController
     }
 
     /** 【Day11 · v3】乐观锁扣库存（备用对照）。 */
+    @SuppressWarnings("ConstantConditions")
     @PostMapping("/{id:\\d+}/deduct/version")
     public AjaxResult deductOptimistic(@PathVariable("id") Long id,
                                        @RequestParam(name = "n", defaultValue = "1") Integer n)
