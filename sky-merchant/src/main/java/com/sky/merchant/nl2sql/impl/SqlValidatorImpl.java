@@ -12,6 +12,7 @@ import com.alibaba.druid.sql.ast.expr.SQLPropertyExpr;
 import com.alibaba.druid.sql.ast.expr.SQLQueryExpr;
 import com.alibaba.druid.sql.ast.statement.*;
 import com.alibaba.druid.sql.visitor.SQLASTVisitorAdapter;
+import com.sky.merchant.constant.Nl2SqlLimits;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -21,7 +22,6 @@ import com.alibaba.druid.sql.SQLUtils;
 import com.alibaba.druid.sql.ast.SQLStatement;
 import com.alibaba.druid.sql.ast.SQLLimit;
 import com.alibaba.druid.sql.ast.expr.SQLIntegerExpr;
-import com.sky.merchant.constant.RedisKeys;
 import com.sky.merchant.nl2sql.SchemaMetadataProvider;
 import com.sky.merchant.nl2sql.SqlValidator;
 import com.sky.merchant.nl2sql.ValidationResult;
@@ -35,16 +35,18 @@ import com.sky.merchant.nl2sql.ValidationResult.Reason;
  * 这样拆的两个理由：
  *   1) 每一步能单独读、单独验证 —— 安全逻辑最怕"揉成一大坨看不出漏了哪步"；
  *   2) 递归/归一化这类容易写错的逻辑独立成方法，便于单测逐个击破。
- * validate(sql, userId)                       ← 主方法：编排 4 步
+ * validate(sql, userId)                       ← 主方法：只做编排，不写细节逻辑
+ * 下面这些序号 = 实际执行顺序，读代码时可以逐条对照
  *   ├─ 步骤0  解析（try-catch 包住 parseSingleStatement）
  *   ├─ 步骤1  语句类型判定（instanceof，无需单独方法）
- *   ├─ 步骤3a UNION 判定（必须在强转 queryBlock 之前！见下方注释）
- *   ├─ 步骤2  collectTableNames() → collectTables() 递归 → normalizeTableName() 归一化
- *   ├─ 步骤3b hasSubquery()       → 递归 from 树
- *   ├─ 步骤3c hasSqlComment()     → 注意吃的是【原始 SQL 字符串】不是 AST
- *   ├─ 步骤3d hasSelectAll()      → 列级：挡 SELECT * 和 SELECT d.*
- *   ├─ 步骤3e findIllegalColumn() → 列级：挡白名单之外的列（含 WHERE / ORDER BY 里的）
- *   └─ 步骤4  appendLimit() / appendDataScope()
+ *   ├─ 步骤2  UNION 判定（顺序陷阱！必须早于步骤3的强转 —— 见下方）
+ *   ├─ 步骤3  collectTableNames() → collectTables() 递归 → normalizeTableName() 归一化
+ *   ├─ 步骤4  hasSubquery()       → 递归整条语句（WHERE 里的子查询也要抓）
+ *   ├─ 步骤5  hasSqlComment()     → 注意吃的是【原始 SQL 字符串】不是 AST
+ *   ├─ 步骤6  hasSelectAll()      → 列级：挡 SELECT * 和 SELECT d.*
+ *   ├─ 步骤7  hasCartesianJoin()  → 结构级：JOIN 缺 ON / USING 一律拒
+ *   ├─ 步骤8  findIllegalColumn() → 列级：挡白名单之外的列（含 WHERE / ORDER BY 里的）
+ *   └─ 步骤9  appendLimit() / appendDataScope()
  * ⚠️ 唯一的顺序陷阱
  * ------------------------------------------------------------------
  * UNION 判定必须放在"强转 SQLSelectQueryBlock"之前。
@@ -87,11 +89,11 @@ public class SqlValidatorImpl implements SqlValidator
         }
         SQLSelect select = selectStmt.getSelect(); // 返回 SQLSelect
         SQLSelectQuery query = select.getQuery();  // 再取一层才是 SQLSelectQuery
-        // ---- 步骤 3a：先挡 UNION（顺序陷阱！必须在强转 queryBlock 之前）----
+        // ---- 步骤 2：先挡 UNION（顺序陷阱！必须在强转 queryBlock 之前）----
         if (!(query instanceof SQLSelectQueryBlock block)) {
             return ValidationResult.fail(Reason.FORBIDDEN_PATTERN, "只支持普通查询");
         }
-        // ---- 步骤 2：表白名单 ----
+        // ---- 步骤 3：表白名单 ----
         Set<String> tables = collectTableNames(block);
         if (tables.isEmpty()){
             return ValidationResult.fail(Reason.PARSE_ERROR, "SQL解析失败");
@@ -102,26 +104,32 @@ public class SqlValidatorImpl implements SqlValidator
                 return ValidationResult.fail(Reason.TABLE_NOT_ALLOWED, "涉及不开放的表：" + t);
             }
         }
-        // ---- 步骤 3b/3c：子查询 + 注释 ----
+        // ---- 步骤 4/5：子查询 + 注释 ----
         // ⚠️ 传的是整条 stmt，不是 block.getFrom() —— WHERE 里的子查询同样能藏越权表，
         //    详见 hasSubquery 的注释（2026-10-11 修的漏洞）
         if (hasSubquery(stmt) || hasSqlComment(sql)) {
             return ValidationResult.fail(Reason.FORBIDDEN_PATTERN, "涉及子查询或注释");
         }
-        // ---- 步骤 3d：禁止列通配符（SELECT * / SELECT d.*）----
+        // ---- 步骤 6：禁止列通配符（SELECT * / SELECT d.*）----
         // 为什么放在表白名单之后：「越权」比「列全」严重 —— 一条 SQL 要是越权了，
         // 就该报 TABLE_NOT_ALLOWED，报 SELECT * 反而把更严重的问题盖住了。
         if (hasSelectAll(block)) {
             return ValidationResult.fail(Reason.SELECT_STAR_NOT_ALLOWED, "不支持 SELECT *，请指定具体字段");
         }
-        // ---- 步骤 3e：列白名单 ----
+        // ---- 步骤 7：JOIN 必须写明连接条件 ----
+        // 实测：join / inner join / cross join / 逗号 / left join 在缺 ON 时都是 condition=null，
+        // 结果集是两表全组合 —— LIMIT 只管行数，挡不住"算一遍全组合"这个代价。
+        if (hasCartesianJoin(block.getFrom())) {
+            return ValidationResult.fail(Reason.CARTESIAN_JOIN, "JOIN 必须写明 ON 条件");
+        }
+        // ---- 步骤 8：列白名单 ----
         // 必须在子查询检查之后 —— 子查询里的表名/列名会混进收集结果，那时结论不可信。
         // 也必须在 SELECT * 检查之后 —— 通配符是更明确的信号，先报它。
         String illegalColumn = findIllegalColumn(stmt);
         if (illegalColumn != null) {
             return ValidationResult.fail(Reason.COLUMN_NOT_ALLOWED, "不允许查询该字段：" + illegalColumn);
         }
-        // ---- 步骤 4：重写 ----
+        // ---- 步骤 9：重写 ----
         appendLimit(block);
         appendDataScope(block, userId);
         String rewritten = SQLUtils.toSQLString(stmt, DbType.mysql);
@@ -131,6 +139,18 @@ public class SqlValidatorImpl implements SqlValidator
     // ==================================================================
     // 第 2 步：表名收集
     // ==================================================================
+
+    /*
+    SQLStatement	        整篇文章	             可能是 SELECT、UPDATE、DROP、CREATE……什么都可能是
+    SQLSelectQueryBlock	    文章里的一个段落	     一个 SELECT ... FROM ... WHERE ... 就是一"块"
+    SQLTableSource	        段落里的**"资料出处"**	 数据是从哪张表（或哪几张表 JOIN）来的
+
+    hasSubquery(...)	    SQLStatement	 子查询可能藏在 FROM、WHERE、HAVING、SELECT 任何地方，得从最外层往下全遍历
+    findIllegalColumn(...)	SQLStatement	 列名同样可能出现在 SELECT、WHERE、ORDER BY、JOIN ON 四处，也要全遍历
+    collectTables(...)	    SQLTableSource	           只关心"数据从哪来"，所以只需要 FROM 那一棵子树
+    hasCartesianJoin(...)	SQLTableSource	           同上，只关心 JOIN 有没有连接条件
+    appendLimit(...)	    SQLSelectQueryBlock	LIMIT  是查询块的属性，必须拿到这一层才能改
+     */
 
     /**
      * 从查询块收集所有被引用的表名（已归一化）。
@@ -356,6 +376,36 @@ public class SqlValidatorImpl implements SqlValidator
     }
 
     /**
+     * 判断 FROM 树里有没有「没有连接条件的 JOIN」。
+     * 为什么不能只判 condition == null —— 实测（Druid 1.2.28）：
+     *   join b on ..          → condition 非空                              合法
+     *   join b using (id)     → condition 为 null，但 using 非空             合法，不能误杀
+     *   join b / inner join b / cross join b / "a, b" / left join b（无 ON）
+     *                         → condition 为 null 且 using 为空              笛卡尔积
+     * 所以判据是：condition == null && using 为空。
+     * 三表 JOIN 必须递归：a join b on .. join c on .. 解析出来是 ((a join b) join c)，
+     * 两层 JOIN 节点各带一个条件 —— 只查最外层会漏掉内层缺条件的情况，反之亦然。
+     */
+    private boolean hasCartesianJoin(SQLTableSource source)
+    {
+        if (source == null)
+        {
+            return false;
+        }
+        if (source instanceof SQLJoinTableSource join)
+        {
+            boolean noOn = (join.getCondition() == null);
+            boolean noUsing = (join.getUsing() == null || join.getUsing().isEmpty());
+            if (noOn && noUsing)
+            {
+                return true;   // 命中一个就够了，不用再往下走
+            }
+            return hasCartesianJoin(join.getLeft()) || hasCartesianJoin(join.getRight());
+        }
+        return false;   // 单表（SQLExprTableSource）不是 JOIN，直接过
+    }
+
+    /**
      * 收集 SQL 里出现的所有列名（已排除表名和别名），统一转小写。
      * 三个 visit 都 return false —— 意思是「这个节点我不深入」，理由见 findIllegalColumn。
      */
@@ -392,15 +442,24 @@ public class SqlValidatorImpl implements SqlValidator
     // ==================================================================
 
     /**
-     * 没有 LIMIT 就补一个，防止模型生成无上限的大结果集。
+     * 看 Limit 是否超过 200 行，超过则压回 200。
      * 用 AST 改（setLimit）而不是字符串拼接 ——
      * 字符串拼在 SQL 已带 order by 或结尾分号时会拼出语法错。
      */
     private void appendLimit(SQLSelectQueryBlock block)
     {
-        if (block.getLimit() == null) {
-            block.setLimit(new SQLLimit(new SQLIntegerExpr(RedisKeys.NL2SQL_MAX_ROWS)));
+        int max = Nl2SqlLimits.MAX_ROWS;
+        SQLLimit limit = block.getLimit();
+        if (limit == null) {
+            // 情况一：模型没写 → 直接补 200
+            block.setLimit(new SQLLimit(new SQLIntegerExpr(max)));
+        } else if (limit.getRowCount() instanceof SQLIntegerExpr n) {
+            // 情况二：模型写了，但超过 200 → 压回 200
+            if (n.getNumber().intValue() > max) {   // 关键：getNumber() 后要 .intValue()
+                limit.setRowCount(new SQLIntegerExpr(max));
+            }
         }
+        // 情况三：模型写了且不超过 200 → 不动
     }
 
     /**

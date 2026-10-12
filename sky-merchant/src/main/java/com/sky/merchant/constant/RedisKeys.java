@@ -49,11 +49,12 @@ public class RedisKeys
     /** 逻辑过期版详情缓存的重建锁的过期时间（秒）：必须明显大于一次查库的耗时，否则锁会提前失效 */
     public static final int DISH_LOGICAL_LOCK_TTL_SECONDS = 10;
 
-    /** 没抢到锁后最多等多久（毫秒）：必须 ≤ 锁 TTL×1000 */
+    /**
+     * 抢重建锁最多等多久（毫秒）。交给 Redisson 的 tryLock，必须 ≤ 锁 TTL×1000。
+     * （改 Redisson 之前这里是"轮询预算"，配套还有个 50ms 的轮询间隔常量；
+     *   tryLock 改用 pub/sub 唤醒后不再轮询，那个间隔常量已删除。）
+     */
     public static final long DISH_LOCK_WAIT_MILLIS = 2000L;
-
-    /** 等锁轮询间隔（毫秒）：间隔 × 轮数 ≈ 等待预算 */
-    public static final long DISH_LOCK_RETRY_INTERVAL_MILLIS = 50L;
 
     /**
      * 逻辑过期版详情缓存前缀。例：merchant:dish:detail:logical:80
@@ -82,7 +83,6 @@ public class RedisKeys
     /**
      * 扣库存的 Redisson 分布式锁 key 前缀，后面拼菜品 id。
      * 例：merchant:dish:stock:lock:80
-     *
      * 为什么不复用 DISH_LOCK_PREFIX：两把锁保护的临界区不同、粒度也不同 ——
      * DISH_LOCK_PREFIX 保护"重建缓存"（毫秒级，10 秒 TTL 够），
      * 这把保护"扣库存"（业务级，需要看门狗续期）。混用会互相干扰。
@@ -92,7 +92,6 @@ public class RedisKeys
     /**
      * 【Day12】手写 SET NX PX 锁 demo 的 key 前缀，后面拼业务标识。
      * 例：merchant:lock:demo:A
-     *
      * 单独起前缀而不是复用 DISH_LOCK_PREFIX：这是演示用的锁，
      * 和生产路径的缓存重建锁混在一起会干扰排查。
      */
@@ -100,7 +99,6 @@ public class RedisKeys
 
     /**
      * 【Day13】NL2SQL 元数据（白名单表的 schema 文本）的缓存 key。
-     *
      * 为什么不加表名：本期白名单只有 3 张表，合并成一段文本喂给模型反而更好 ——
      * 分 key 存会让每次请求要读 3 次 Redis、还要在应用层拼装。
      * 表数涨到几十张时必须改成按表分 key + 召回（见 Day13 文档「5.3 表多了怎么办」）。
@@ -109,12 +107,6 @@ public class RedisKeys
 
     /** NL2SQL schema 文本的 TTL（秒）：30 分钟。DDL 变更后靠等它过期或手动删 */
     public static final int NL2SQL_SCHEMA_TTL_SECONDS = 30 * 60;
-
-    /** NL2SQL 查询结果强制追加的 LIMIT（行）。防止模型生成无 LIMIT 的大结果集打爆内存 */
-    public static final int NL2SQL_MAX_ROWS = 200;
-
-    /** NL2SQL 单次查询的超时时间（秒）。超过直接中断，不让慢 SQL 拖住连接池 */
-    public static final int NL2SQL_QUERY_TIMEOUT_SECONDS = 5;
 
     private RedisKeys()
     {

@@ -217,6 +217,29 @@ class SqlValidatorImplTest
     }
 
     @Test
+    @DisplayName("笛卡尔积：JOIN 缺连接条件一律拒，但 USING / 带 ON 的不能误杀")
+    void rejectCartesianJoin()
+    {
+        // 缺连接条件的各种写法，一个都不能漏
+        assertRejected(Reason.CARTESIAN_JOIN, "select a.id from tb_dish a join tb_course b");
+        assertRejected(Reason.CARTESIAN_JOIN, "select a.id from tb_dish a inner join tb_course b");
+        assertRejected(Reason.CARTESIAN_JOIN, "select a.id from tb_dish a, tb_course b");
+        assertRejected(Reason.CARTESIAN_JOIN, "select a.id from tb_dish a cross join tb_course b");
+        assertRejected(Reason.CARTESIAN_JOIN, "select a.id from tb_dish a left join tb_course b");
+        // 三表：最后一层缺条件，必须递归才抓得到
+        assertRejected(Reason.CARTESIAN_JOIN,
+                "select a.id from tb_dish a join tb_dish_flavor f on a.id = f.dish_id join tb_course c");
+
+        // 反向验证：合法连接不能被误杀（尤其是 USING 这条 —— 它 condition 也是 null）
+        assertTrue(validator.validate(
+                        "select a.id from tb_dish a left join tb_course b on a.id = b.id", 1L).isPassed(),
+                "带 ON 的 LEFT JOIN 被误杀了");
+        assertTrue(validator.validate(
+                        "select a.id from tb_dish a join tb_course b using (id)", 1L).isPassed(),
+                "USING 是合法连接却被拒了 —— 说明判定只看了 condition，没看 using");
+    }
+
+    @Test
     @DisplayName("列白名单：别名 / 表名 / count(*) 不能被误当成列名（否则合法查询会被误拦）")
     void acceptAliasNotTreatedAsColumn()
     {
@@ -280,5 +303,26 @@ class SqlValidatorImplTest
                         + "join tb_dish_flavor b on a.id = b.dish_id "
                         + "join tb_course c on c.id = a.id", 1L);
         assertTrue(r.isPassed(), "三表 JOIN 被拒了，原因：" + r.getMessage());
+    }
+
+    @Test
+    @DisplayName("LIMIT 收口：模型写超了要压回 200，写小了不能放大")
+    void appendLimitCapsModelLimit()
+    {
+        // 用带词边界的正则断言，而不是 contains("limit 200")：
+        // 后者对 "LIMIT 2000" 也会为真 —— 压回失败时反而测不出来。
+        // (?s) 让 . 能跨行匹配（重写后的 SQL 带换行）。
+
+        // 超了 → 压回 200
+        ValidationResult big = validator.validate("select id from tb_dish limit 100000", 1L);
+        assertTrue(big.isPassed());
+        assertTrue(big.getRewrittenSql().toLowerCase().matches("(?s).*\\blimit 200\\b.*"),
+                "模型写的超大 LIMIT 没被压回来：" + big.getRewrittenSql());
+
+        // 写小了 → 原样保留，别放大
+        ValidationResult small = validator.validate("select id from tb_dish limit 5", 1L);
+        assertTrue(small.isPassed());
+        assertTrue(small.getRewrittenSql().toLowerCase().matches("(?s).*\\blimit 5\\b.*"),
+                "模型写的 LIMIT 5 被改动了：" + small.getRewrittenSql());
     }
 }

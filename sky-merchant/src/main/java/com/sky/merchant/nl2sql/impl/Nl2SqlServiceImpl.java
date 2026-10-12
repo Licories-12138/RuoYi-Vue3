@@ -3,14 +3,15 @@ package com.sky.merchant.nl2sql.impl;
 import java.sql.ResultSetMetaData;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 
+import com.sky.merchant.constant.Nl2SqlLimits;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
-import com.sky.merchant.constant.RedisKeys;
 import com.sky.merchant.nl2sql.INl2SqlService;
 import com.sky.merchant.nl2sql.Nl2SqlResult;
 import com.sky.merchant.nl2sql.SchemaMetadataProvider;
@@ -56,9 +57,14 @@ public class Nl2SqlServiceImpl implements INl2SqlService {
         // 不 clone 的话，这里对 builder 的任何改动都会影响那边（Day8 踩过的坑）。
         // 这里不设 defaultOptions —— 直接用 application.yml 里配好的 model / temperature。
         this.chatClient = builder.clone().build();
-        this.jdbcTemplate = jdbcTemplate;
         this.metadataProvider = metadataProvider;
         this.sqlValidator = sqlValidator;
+
+        // 复制一个"只给 NL2SQL 用"的 JdbcTemplate，不污染全局那个
+        JdbcTemplate own = new JdbcTemplate(Objects.requireNonNull(jdbcTemplate.getDataSource()));
+        own.setQueryTimeout(Nl2SqlLimits.QUERY_TIMEOUT_SECONDS);  // 超过 5 秒直接掐断
+        own.setMaxRows(Nl2SqlLimits.MAX_ROWS);                    // 最多只取 200 行
+        this.jdbcTemplate = own;                                      // 使用复制的 JdbcTemplate
     }
 
     @Override
@@ -110,7 +116,7 @@ public class Nl2SqlServiceImpl implements INl2SqlService {
                     rows.add(row);
                 }
 
-                int max = RedisKeys.NL2SQL_MAX_ROWS;
+                int max = Nl2SqlLimits.MAX_ROWS;
                 boolean truncated = rows.size() >= max;
 
                 // 5. 组装 Nl2SqlResult：sql / columns / rows / rowCount / truncated / error

@@ -45,6 +45,17 @@ public class DbSchemaMetadataProvider implements SchemaMetadataProvider {
      *   tb_dish.version        乐观锁版本号，纯内部字段
      *   create_time/update_time  审计字段，模型不需要
      *   tb_course 同类字段同理
+     *
+     * ⚠️ 这份名单「只用于校验」，**不用来过滤喂给模型的 schema 文本** ——
+     * buildSchemaText() 会把 information_schema 里的【全部列】都写进提示词，
+     * 包括上面这些被排除的。这是**故意的**，原因：
+     *   Day14 验收清单第 7 条要验的是「模型点名叫内部字段时拦得住」。
+     *   模型必须先看得见 stock，才可能生成 select stock，才验得出白名单生效；
+     *   如果提示词里也不给，模型压根不会写，这条验收就等于没测。
+     * 代价（知情取舍）：用户问"库存"会拿到 COLUMN_NOT_ALLOWED 而不是模型的 NO_QUERY，
+     *   提示语是"不允许查询该字段：stock"，对普通用户偏费解。
+     * 若将来决定过滤（真要对外时更该这么做：不把模型用不了的东西喂给它），
+     *   要同步改 Day14 那三条用例的预期：COLUMN_NOT_ALLOWED → NO_QUERY。
      */
     private static final Map<String, List<String>> ALLOWED_COLUMNS = Map.of(
             "tb_dish", List.of("id", "name", "price", "description", "status"),
@@ -149,6 +160,9 @@ public class DbSchemaMetadataProvider implements SchemaMetadataProvider {
             if (cols == null) {
                 continue;   // 该表没查到列，跳过
             }
+            // ⚠️ 这里【故意】不按 ALLOWED_COLUMNS 过滤，把全部列都喂给模型。
+            //    原因与代价见 ALLOWED_COLUMNS 的注释（Day14 验收第 7 条要验"点名也拦得住"）——
+            //    想改成过滤的话，先读完那段注释再动手。
             for (Map<String, Object> column : cols) {
                 String colName = str(column, "colName");
                 String colType = str(column, "colType");
@@ -156,15 +170,12 @@ public class DbSchemaMetadataProvider implements SchemaMetadataProvider {
                 String override = COMMENT_OVERRIDES.get(tblName + "." + colName);
                 String colComment = (override != null) ? override : str(column, "colComment");
 
-                sb.append("  ")
-                        .append(colName).append("  ")
-                        .append(colType).append("  ")
-                        .append(colComment).append("\n");
-                // 因为 colComment 是空串，拼接时 " " + "" 就留下了两个空格,去掉空格
+                // 攒成一行再拼：注释为空时行尾不会留多余空格
+                StringBuilder line = new StringBuilder("  ").append(colName).append("  ").append(colType);
                 if (!colComment.isEmpty()) {
-                    sb.append("  ").append(colComment);
+                    line.append("  ").append(colComment);
                 }
-                sb.append("\n");
+                sb.append(line).append("\n");
             }
         }
         //  5. 末尾追加 "关联关系（人工声明）：" + RELATION_HINTS
