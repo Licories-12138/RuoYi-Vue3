@@ -1,6 +1,6 @@
 # Day 13 · 融合作品立项：NL2SQL 方案设计
 
-日期：2026-10-11　项目：`D:\code\sky`　分支：`ruoyi-merchant`　模块：`sky-merchant`（新增子包）
+日期：2026-10-11　项目：`D:\code\sky`　分支：`merchant-agent`　模块：`sky-merchant`（新增子包）
 本机：MySQL 8.4.11（`localhost:3306`，库 `ry-vue`）｜ Redis 8.10.2（`D:\Develop\redis-8.10.2`）
 模型：qwen3.7-flash（`spring.ai.openai`，`base-url=.../compatible-mode/v1`，key 走 `DASHSCOPE_KEY`）
 

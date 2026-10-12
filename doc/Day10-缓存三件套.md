@@ -1,6 +1,6 @@
 # Day10 缓存三件套：穿透 / 击穿 / 雪崩
 
-日期：2026-10-07 ~ 2026-10-08　分支：`ruoyi-merchant`　模块：`sky-merchant`　本机 Redis：3.2.100（`D:\Develop\Redis-x64-3.2.100`，端口 6379，db 0）
+日期：2026-10-07 ~ 2026-10-08　分支：`merchant-agent`　模块：`sky-merchant`　本机 Redis：3.2.100（`D:\Develop\Redis-x64-3.2.100`，端口 6379，db 0）
 
 承接 Day9。Day9 解决的问题是「**要不要缓存**」（Cache Aside + 写后删缓存 + key 收口）；Day10 解决的是「**缓存扛不住的时候会怎么坏**」。三个故障各有一套独立成因，所以是三个独立的 Step，而不是一个方案加参数。
 

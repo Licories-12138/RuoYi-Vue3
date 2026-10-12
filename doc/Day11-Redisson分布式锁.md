@@ -1,6 +1,6 @@
 # Day11 扣库存的四条路：从超卖到分布式锁
 
-日期：2026-10-09　分支：`day9-rewrite`（目标合回 `ruoyi-merchant`）　模块：`sky-merchant`　本机 Redis：8.10.2（`D:\Develop\redis-8.10.2`，端口 6379，db 0）
+日期：2026-10-09　分支：`day9-rewrite`（目标合回 `merchant-agent`）　模块：`sky-merchant`　本机 Redis：8.10.2（`D:\Develop\redis-8.10.2`，端口 6379，db 0）
 
 承接 Day10。Day9 解决「**要不要缓存**」，Day10 解决「**缓存扛不住会怎么坏**」，Day11 换一条线：**并发写同一条数据时会怎么坏**。
 

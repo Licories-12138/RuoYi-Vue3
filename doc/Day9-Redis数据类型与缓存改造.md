@@ -1,6 +1,6 @@
 # Day9 Redis 数据类型与若依中的用法
 
-日期：2026-10-05（第五节 Step 5、6 于 2026-10-06 在重写分支 day9-rewrite 上重做并实测）　分支：ruoyi-merchant / day9-rewrite　本机 Redis：3.2.100（`D:\Develop\Redis-x64-3.2.100`，端口 6379，db 0）
+日期：2026-10-05（第五节 Step 5、6 于 2026-10-06 在重写分支 day9-rewrite 上重做并实测）　分支：merchant-agent / day9-rewrite　本机 Redis：3.2.100（`D:\Develop\Redis-x64-3.2.100`，端口 6379，db 0）
 
 ---
 

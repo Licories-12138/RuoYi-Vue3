@@ -1,6 +1,6 @@
 # Day12 双写一致性与 Lua
 
-日期：2026-10-11　分支：`ruoyi-merchant`　模块：`sky-merchant`　本机 Redis：8.10.2（`D:\Develop\redis-8.10.2`）
+日期：2026-10-11　分支：`merchant-agent`　模块：`sky-merchant`　本机 Redis：8.10.2（`D:\Develop\redis-8.10.2`）
 
 承接 Day10（缓存三件套）与 Day11（扣库存四版）。Day10 解决的是「**怎么用缓存**」，Day11 解决的是「**并发写同一条数据会怎么坏**」，Day12 换到第三个问题：**缓存和数据库怎么保持一致**。
 
