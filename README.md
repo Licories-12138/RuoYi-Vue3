@@ -1,8 +1,8 @@
 # 餐饮商家智能经营助手 · 前端
 
-给餐饮商家用的管理界面，对接同仓库 `ruoyi-merchant` 分支的后端。
+给餐饮商家用的管理界面，对接同仓库 `merchant-agent` 分支的后端。
 
-> 这个分支只放前端。配套后端在 [`ruoyi-merchant` 分支](https://github.com/Licories-12138/merchant-ai-assistant/tree/ruoyi-merchant)
+> 这个分支只放前端。配套后端在 [`merchant-agent` 分支](https://github.com/Licories-12138/merchant-ai-assistant/tree/merchant-agent)
 > （JDK 17 + Spring Boot 4.1.0）。
 > 另有 [`backend` 分支](https://github.com/Licories-12138/merchant-ai-assistant/tree/backend)（课程管理模块），和这套界面不配套。
 
@@ -33,7 +33,7 @@ npm install
 npm run dev
 ```
 
-接口代理指向 `http://localhost:8080`，需要先把 `ruoyi-merchant` 分支的后端跑起来。
+接口代理指向 `http://localhost:8080`，需要先把 `merchant-agent` 分支的后端跑起来。
 
 ---
 
