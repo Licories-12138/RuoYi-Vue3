@@ -12,6 +12,7 @@ import com.sky.common.utils.DateUtils;
 import com.sky.merchant.cache.DishBloomFilter;
 import com.sky.merchant.cache.RedisData;
 import com.sky.merchant.config.CacheRebuildConfig;
+import com.sky.merchant.lock.SimpleRedisLock;
 import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -52,6 +53,7 @@ import org.slf4j.LoggerFactory;
  * @author ruoyi
  * @date 2026-10-04
  */
+@SuppressWarnings("JavadocBlankLines")
 @Service
 public class DishServiceImpl implements IDishService {
     @Autowired
@@ -69,6 +71,8 @@ public class DishServiceImpl implements IDishService {
     private ThreadPoolExecutor rebuildExecutor;
     @Autowired
     private RedissonClient redissonClient;
+    @Autowired
+    private SimpleRedisLock simpleRedisLock;
 
     private static final int MAX_RETRY = 10;
     private static final Logger log = LoggerFactory.getLogger(DishServiceImpl.class);
@@ -88,7 +92,6 @@ public class DishServiceImpl implements IDishService {
      * @param id 菜品管理主键
      * @return 菜品管理
      */
-    @SuppressWarnings("BusyWait")
     @Override
     public Dish selectDishById(Long id) {
         if (!dishBloomFilter.mightContain(id)) {
@@ -108,55 +111,52 @@ public class DishServiceImpl implements IDishService {
             return cached;
         }
 
-        // 1.缓存未命中，进入重建流程
+        // 1. 缓存未命中 → 抢重建锁。
+        //    用 Redisson 的 tryLock 取代手写 SETNX + 轮询：它自带"等待 + 锁一放就唤醒"，
+        //    原来那 15 行 while + Thread.sleep 整段删掉，等待期间也不再产生 Redis 请求。
         log.info("缓存未命中，开始重建：id = {}", id);
-        String lockKey = RedisKeys.DISH_LOCK_PREFIX + id;
-        // 2.抢锁: 带 TTL 的 SETNX（SET IF NOT EXIST + EXPIRE，一条命令原子完成
-        Boolean locked = stringRedisTemplate.opsForValue()
-                .setIfAbsent(lockKey, "1", Duration.ofSeconds(RedisKeys.DISH_LOCK_TTL_SECONDS));
-        if (Boolean.TRUE.equals(locked)) {
-            // 抢到锁,A线程
-            try {
+        RLock lock = redissonClient.getLock(RedisKeys.DISH_LOCK_PREFIX + id);
+        boolean locked = false;
+        try {
+            // ⚠️ 两个时间参数共用同一个单位 —— 别一个填秒一个填毫秒，那是经典坑。
+            //    等 2 秒（DISH_LOCK_WAIT_MILLIS）、租期 10 秒（DISH_LOCK_TTL_SECONDS），
+            //    显式给租期 = 关闭看门狗：缓存重建只是"查一次库"的毫秒级临界区，
+            //    10 秒绰绰有余，还能省掉看门狗线程。
+            //    （对比 Day11 扣库存：那是业务级长临界区，才必须不传租期、靠看门狗续期。）
+            locked = lock.tryLock(RedisKeys.DISH_LOCK_WAIT_MILLIS,
+                    RedisKeys.DISH_LOCK_TTL_SECONDS * 1000L, TimeUnit.MILLISECONDS);
+            if (locked) {
                 log.info("拿到锁，重建缓存：id = {}", id);
-                return loadAndCache(id, key);
-            } finally {
-                // 3) 无论成功、失败、异常，都必须把锁还回去
-                stringRedisTemplate.delete(lockKey);
+                return loadAndCache(id, key);   // 里面还有一次双检
+            }
+            // 2. 等不到锁（持锁者超过预算还没放）→ 再读一次缓存，读到什么给什么。
+            //    这里绝不能无条件查库：那会把所有等超时的线程在同一瞬间一起砸向数据库。
+            RedisData<Dish> again = readCacheEntry(key);
+            if (again != null) {
+                log.info("等锁超时但缓存已就绪：id = {}", id);
+                return again.getData();         // data 为 null 就是空值标记
+            }
+            // 3. 抛明确异常
+            log.warn("等锁预算用尽且缓存仍未就绪：id = {}", id);
+            throw new ServiceException("服务繁忙，请稍后重试");
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();   // 恢复中断标志，别吞掉
+            return null;
+        } finally {
+            // 4. 放锁：Redisson 的锁在 Redis 里是 Hash（field=threadId + 重入计数），
+            //    unlock 走"比对归属再删"的 Lua —— 不会再出现"误删别人的锁"。
+            //    isHeldByCurrentThread 挡的是"tryLock 没拿到却去 unlock"（那会抛
+            //    IllegalMonitorStateException）。
+            if (locked && lock.isHeldByCurrentThread()) {
+                try {
+                    lock.unlock();
+                } catch (Exception e) {
+                    // 极窄的竞态：判断"是我的锁"之后、unlock 之前租期刚好到期并被别人拿走。
+                    // 这里必须吞掉 —— finally 里抛异常会把正在传播的业务异常盖掉。
+                    log.warn("释放重建锁失败（锁可能已过期）：id = {}", id, e);
+                }
             }
         }
-        // 3. 没抢到锁：在预算内轮询缓存。预算与锁 TTL 同源（预算 ≤ TTL），
-        // 保证"只要锁还在有效期内，我就还有机会等到结果"
-        long deadline = System.currentTimeMillis() + RedisKeys.DISH_LOCK_WAIT_MILLIS;
-        while (System.currentTimeMillis() < deadline) {
-            try {
-                Thread.sleep(RedisKeys.DISH_LOCK_RETRY_INTERVAL_MILLIS);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();   // 恢复中断标志，别吞掉
-                return null;
-            }
-            // 等一下再读缓存：读的是和 loadAndCache 同一种格式（RedisData 包装）
-            RedisData<Dish> retry = readCacheEntry(key);
-            if (retry != null) {
-                Dish cached = retry.getData();
-                log.info("等锁期间命中缓存：id = {}, 空值标记 = {}", id, cached == null);
-                return cached;          // data 为 null 就是空值标记
-            }
-        }
-        // 4. 预算用尽：兜底也要抢锁，抢到才查库。
-        // 若无条件查库，所有等超时的线程会在同一瞬间一起砸向数据库，比不加锁更尖。
-        Boolean relocked = stringRedisTemplate.opsForValue()
-                .setIfAbsent(lockKey, "1", Duration.ofSeconds(RedisKeys.DISH_LOCK_TTL_SECONDS));
-        if (Boolean.TRUE.equals(relocked)) {
-            try {
-                log.info("等锁超时后抢到锁，重建缓存：id = {}", id);
-                return loadAndCache(id, key);
-            } finally {
-                stringRedisTemplate.delete(lockKey);
-            }
-        }
-        // 5. 抛明确异常
-        log.warn("等锁预算用尽且未抢到兜底锁：id = {}", id);
-        throw new ServiceException("服务繁忙，请稍后重试");
     }
 
     /**
@@ -185,16 +185,17 @@ public class DishServiceImpl implements IDishService {
         }
         // 4. 重建 -- 抢锁
         String lockKey = RedisKeys.DISH_LOGICAL_LOCK_PREFIX + id;
-        Boolean locked = stringRedisTemplate.opsForValue()
-                .setIfAbsent(lockKey, "1", Duration.ofSeconds(RedisKeys.DISH_LOGICAL_LOCK_TTL_SECONDS));
-        if (Boolean.TRUE.equals(locked)) {
+        String token = SimpleRedisLock.newToken(); // 新令牌
+        boolean locked = simpleRedisLock.tryLock(lockKey, token,
+                RedisKeys.DISH_LOGICAL_LOCK_TTL_SECONDS * 1000L); // 转换为毫秒
+        if (locked) {
             // 4.1 没有旧数据 -> 同步重建
             if (old == null) {
                 try {
                     log.info("没有旧数据，同步重建：id = {}", id);
                     return rebuildLogical(id, key);
                 } finally {
-                    stringRedisTemplate.delete(lockKey); // 释放锁
+                    simpleRedisLock.unlock(lockKey, token); //
                 }
             }
             // 4.2 有旧数据 -> 异步重建
@@ -208,11 +209,11 @@ public class DishServiceImpl implements IDishService {
                     try {
                         rebuildLogical(id, key);
                     } finally {
-                        stringRedisTemplate.delete(lockKey);   // 重建完（或失败）放锁
+                        simpleRedisLock.unlock(lockKey, token);   // 重建完（或失败）放锁
                     }
                 });
             } catch (RejectedExecutionException e) {
-                stringRedisTemplate.delete(lockKey);           // 提交失败，锁得自己还
+                simpleRedisLock.unlock(lockKey, token);           // 提交失败，锁得自己还
                 log.warn("重建任务被拒绝，锁已归还：id = {}", id);
             }
             return old;
@@ -349,13 +350,15 @@ public class DishServiceImpl implements IDishService {
         int rows = dishMapper.insertDish(dish);
         insertDishFlavor(dish);
         dishBloomFilter.add(dish.getId()); // ← 新增的 id 必须同步进过滤器
-        redisCache.deleteObject(RedisKeys.DISH_ONSALE_KEY);
+        afterCommit(() ->
+                redisCache.deleteObject(RedisKeys.DISH_ONSALE_KEY
+                ));
         return rows;
     }
 
     /**
      * 修改菜品管理
-     *
+
      * @param dish 菜品管理
      * @return 结果
      */
@@ -643,16 +646,14 @@ public class DishServiceImpl implements IDishService {
             throw new ServiceException("库存不足");
         }
         // 4. 清空缓存
-        clearDishCache(dishId);
+        afterCommit(() -> clearDishCache(dishId));
         // 5. 返回最终库存
         return dishMapper.selectStockById(dishId);
     }
 
     /**
      * 【v3 · 乐观锁】备用对照。
-     *
      * 实现要点（必须带重试循环）：
-     *
      *   for (int i = 0; i < MAX_RETRY; i++) {
      *       Dish dish = dishMapper.selectDishById(dishId);     // 读 stock + version
      *       if (dish.getStock() < count) { throw ... }
@@ -662,13 +663,10 @@ public class DishServiceImpl implements IDishService {
      *       // rows == 0 → 有人抢先改了，重读重试
      *   }
      *   throw new ServiceException("并发冲突，请重试");
-     *
      * 对比结论：
-     *
      * - v2 一步到位、零重试；v3 是"读-改-写"，重试是常态
      * - 高并发下 v3 的重试会放大数据库压力，v2 不会
      * - v3 的价值在"读多写少 + 冲突极低"场景，比如配置项更新
-     *
      * 注意 {@code getStock()} 是 Integer 包装类型，可能为 null（菜品不存在），
      * 直接参与 {@code <} 比较会 NPE —— 先判 null。
      *
@@ -702,7 +700,7 @@ public class DishServiceImpl implements IDishService {
             int rows = dishMapper.deductStockOptimistic(dishId, count, dish.getVersion());
             // 2.4 判断结果
             if (rows == 1) {
-                clearDishCache(dishId);
+                afterCommit(() -> clearDishCache(dishId));
                 return dish.getStock() - count;
             } else if (rows == 0) {
                 //noinspection UnnecessaryContinue
