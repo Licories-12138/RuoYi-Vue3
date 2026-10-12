@@ -3,6 +3,12 @@
 > 目标文件：`sky-merchant/src/main/java/com/sky/merchant/nl2sql/impl/SqlValidatorImpl.java`
 > 接口定义见同目录 `SqlValidator.java`（那 4 步的 Javadoc 就是需求）。
 > 本文所有 API 路径**已从 `druid-1.2.1.jar` 反查核实**，可以直接抄。
+>
+> ⚠️ **本文是"实现前"的写作指南，不是最终代码的说明书。**
+> 它记录的是当时怎么想的、怎么一步步拆的 —— 实现过程中有几处演进：
+> LIMIT 从"没有才补"改成"超了就压回"、新增了笛卡尔积拦截、
+> 常量从 `RedisKeys` 搬到了 `Nl2SqlLimits`。
+> **要了解当前行为，请以 `SqlValidatorImpl.java` 和它的单测为准。**
 
 ---
 
@@ -218,6 +224,12 @@ if (queryBlock.getLimit() == null) {
 // 按 userId 追加 where 条件 —— 与 Day5 @DataScope 同一思路
 ```
 
+⚠️ **实现后补记**：上面的骨架只写了"没有 LIMIT 就补"。
+最终实现还有第二种情况 —— **模型自己写了但超过上限**（例如 `LIMIT 100000`），
+也要压回 200，否则模型一句话就绕过了行数上限。现在 `appendLimit()` 的原则是
+**"上限取小的那个"**（没写就补、写超了就压、写小了不动），
+单测 `appendLimitCapsModelLimit` 覆盖了这三种情况。
+
 ⚠️ **重写要用 AST 而不是字符串拼接** —— 字符串拼 `sql + " limit 200"` 在 SQL 已带
 `order by` 或分号时都会出错。Druid 有 `SQLSelectQueryBlock.setLimit()`（**已核实存在**），
 改完用 `SQLUtils.toSQLString(stmt, DbType.mysql)` 输出。
@@ -226,7 +238,7 @@ if (queryBlock.getLimit() == null) {
 ```java
 import com.alibaba.druid.sql.ast.SQLLimit;                        // ← 在 ast 包，不在 statement
 import com.alibaba.druid.sql.ast.expr.SQLIntegerExpr;             // ← 在 ast.expr 包
-queryBlock.setLimit(new SQLLimit(new SQLIntegerExpr(RedisKeys.NL2SQL_MAX_ROWS)));
+queryBlock.setLimit(new SQLLimit(new SQLIntegerExpr(Nl2SqlLimits.MAX_ROWS)));
 ```
 （两个包路径均已核实。⚠️ `SQLLimit` 容易找错到 `statement` 包 —— 实际在 `ast`。）
 
